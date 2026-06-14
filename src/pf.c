@@ -7,9 +7,7 @@
 #include <bpf/bpf_helpers.h>
 #include <xdp/xdp_helpers.h>
 
-
-typedef __u8 u8;
-typedef __u16 u16;
+#include "protocols.h"
 
 #define ETHERNET_ETHERTYPE_OFFSET 12
 #define ETHERNET_ETHERTYPE_OFFSET_VLAN 16
@@ -18,26 +16,10 @@ typedef __u16 u16;
 #define IPV4_PROTOCOL_OFFSET 9
 
 
-enum L3Protocol: u8 {
-  PROCOTOL_UNKNOWN = 0x0,
-  PROTOCOL_ICMP = 0x1,
-  PROTOCOL_IGMP = 0x2,
-  PROCOTOL_TCP = 0x6,
-  PROTOCOL_UDP = 0x11,
-  PROTOCOL_OSPF = 0x59,
-  PROTOCOL_SCTP = 0x84,
-  PROTOCOL_ICMPv6 = 0x3a,
-};
-
-enum L2Protocol: u16 {
-  PROTOCOL_UNKNOWN = 0x0,
-  PROTOCOL_IPV4 = 0x0800,
-  PROTOCOL_IPV6 = 0x86dd,
-  PROTOCOL_ARP = 0x0806,
-  VLAN_TAG = 0x8100, 
-};
 
 
+// L3 by TCP/IP. L4 by OSI
+[[unsequenced]]
 static inline char *getL3ProtocolName(enum L3Protocol proto){
   //bpf_printk("[DEBUG] proto: 0x%02x", proto);
   switch (proto) {
@@ -145,5 +127,5 @@ int xdp_pf(struct xdp_md *ctx)
 }
 
 
-char LICENSE[] SEC("license") = "GPL";
+char LICENSE[] SEC("license") = "GPLv3";
 
