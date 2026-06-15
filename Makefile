@@ -1,7 +1,13 @@
 CC=clang
-CFLAGS=-std=c23 -target bpf -O2 -g
+CFLAGS=-std=c23 -O2 -g
+DFLAGS=-D_DEFAULT_SOURCE
+TARGET_BPF=-target bpf
+
+
+build/pf-userspace: src/pf-userspace.c
+	$(CC) $(CFLAGS) $(DFLAGS) $< -o $@
 
 build/pf.bpf.o: src/pf.c
-	$(CC) -c $(CFLAGS) $< -o $@
+	$(CC) -c $(CFLAGS) $(TARGET_BPF) $< -o $@
 
 

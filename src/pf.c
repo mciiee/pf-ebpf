@@ -78,54 +78,67 @@ static inline u16 u16Byteswap(const u16 num) {
   return (*(u8*)&num) * (1 << 8) + *((u8*)&num + 1);
 }
 
+struct {
+    __uint(type, BPF_MAP_TYPE_XSKMAP);
+    __uint(max_entries, 64);
+    __type(key, __u32);
+    __type(value, __u32);
+} xsks_map SEC(".maps");
+
 SEC("xdp")
-int xdp_pf(struct xdp_md *ctx)
-{
-  u8 *data = (u8 *)(long)ctx->data;
-  u8 *data_end = (u8 *)(long)ctx->data_end;
-  //int pkt_sz = data_end - data;
-  //bpf_printk("packet size is %d", pkt_sz);
+static int xdp_pf(struct xdp_md *ctx) {
+  __u32 queue_id = ctx->rx_queue_index;
 
-  if ((u16*)(data + ETHERNET_HEADER_SIZE * sizeof(u8)) > (u16*)data_end) {
-    bpf_printk("Invalid packet: packet size <= ETHERNET_HEADER_SIZE");
-    return XDP_PASS;
-  }
-  
-  enum L2Protocol iproto = u16Byteswap(*(u16*)(data + ETHERNET_ETHERTYPE_OFFSET));
-  if (iproto == VLAN_TAG && (u16*)(data + ETHERNET_ETHERTYPE_OFFSET_VLAN + 2) < (u16*)data_end) {
-    u16 vlan_id = *(u16*)(data + ETHERNET_ETHERTYPE_OFFSET_VLAN);
-    *(u8*)&vlan_id &= 0b00001111;
-    bpf_printk("VLAN: %u", vlan_id);
-    iproto = u16Byteswap(*(u16*)(data + ETHERNET_ETHERTYPE_OFFSET_VLAN));
-  }
-  else if (iproto == VLAN_TAG) {
-    bpf_printk("Invalid packet: packet size <= ETHERNET_HEADER_SIZE");
-    return XDP_PASS;
-  }
-  enum L3Protocol tproto;
-
-  switch (iproto) {
-    case PROTOCOL_IPV4:
-      tproto = parseIPv4(ctx);
-      bpf_printk("Protocol: 0x%02x/0x%04x (%s/IPv4)", tproto, iproto, getL3ProtocolName(tproto));
-      break;
-    case PROTOCOL_IPV6:
-      tproto = parseIPv6(ctx);
-      bpf_printk("Protocol: 0x%02x/0x%04x (%s/IPv6)", tproto, iproto, getL3ProtocolName(tproto));
-      break;
-    case PROTOCOL_ARP:
-      bpf_printk("Protocol: 0x%04x (ARP)", iproto);
-      break;
-    default: 
-      bpf_printk("Protocol: 0x%04x (UNKNOWN)", iproto);
-      break;
-  }
-
-  
-
-  return XDP_PASS;
+  return bpf_redirect_map(&xsks_map, queue_id, XDP_PASS);
 }
 
+//static int _xdp_pf(struct xdp_md *ctx)
+//{
+//  u8 *data = (u8 *)(long)ctx->data;
+//  u8 *data_end = (u8 *)(long)ctx->data_end;
+//  //int pkt_sz = data_end - data;
+//  //bpf_printk("packet size is %d", pkt_sz);
+//
+//  if ((u16*)(data + ETHERNET_HEADER_SIZE * sizeof(u8)) > (u16*)data_end) {
+//    bpf_printk("Invalid packet: packet size <= ETHERNET_HEADER_SIZE");
+//    return XDP_PASS;
+//  }
+//
+//  enum L2Protocol iproto = u16Byteswap(*(u16*)(data + ETHERNET_ETHERTYPE_OFFSET));
+//  if (iproto == VLAN_TAG && (u16*)(data + ETHERNET_ETHERTYPE_OFFSET_VLAN + 2) < (u16*)data_end) {
+//    u16 vlan_id = *(u16*)(data + ETHERNET_ETHERTYPE_OFFSET_VLAN);
+//    *(u8*)&vlan_id &= 0b00001111;
+//    bpf_printk("VLAN: %u", vlan_id);
+//    iproto = u16Byteswap(*(u16*)(data + ETHERNET_ETHERTYPE_OFFSET_VLAN));
+//  }
+//  else if (iproto == VLAN_TAG) {
+//    bpf_printk("Invalid packet: packet size <= ETHERNET_HEADER_SIZE");
+//    return XDP_PASS;
+//  }
+//  enum L3Protocol tproto;
+//
+//  switch (iproto) {
+//    case PROTOCOL_IPV4:
+//      tproto = parseIPv4(ctx);
+//      bpf_printk("Protocol: 0x%02x/0x%04x (%s/IPv4)", tproto, iproto, getL3ProtocolName(tproto));
+//      break;
+//    case PROTOCOL_IPV6:
+//      tproto = parseIPv6(ctx);
+//      bpf_printk("Protocol: 0x%02x/0x%04x (%s/IPv6)", tproto, iproto, getL3ProtocolName(tproto));
+//      break;
+//    case PROTOCOL_ARP:
+//      bpf_printk("Protocol: 0x%04x (ARP)", iproto);
+//      break;
+//    default: 
+//      bpf_printk("Protocol: 0x%04x (UNKNOWN)", iproto);
+//      break;
+//  }
+//
+//
+//
+//  return XDP_PASS;
+//}
 
-char LICENSE[] SEC("license") = "GPLv3";
+
+char LICENSE[] SEC("license") = "GPL";
 
