@@ -3,6 +3,8 @@
 
 #include <linux/bpf.h>
 
+#define ETHERNET_PROTOCOL_OFFSET 12
+
 typedef __u8 u8;
 typedef __u16 u16;
 
