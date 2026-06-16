@@ -19,6 +19,8 @@
 
 #include "protocols.h"
 
+#define BPF_OBJECT_PATH build/pf.bpf.o
+
 #define CHUNK_SIZE 4096
 #define CHUNK_COUNT 4096
 
@@ -42,7 +44,6 @@
 static const __u32 RING_SIZE = 4096;
 
 //struct xsk_socket *xsk;
-//struct xsk_umem *umem;
 static void *umem_area = NULL;
 static int sockfd = 0;
 
@@ -164,7 +165,7 @@ int main(int argc, char *argv[argc]) {
   
   struct sockaddr_xdp sockaddr = {
     .sxdp_family = AF_XDP,
-    .sxdp_flags = XDP_COPY /* XDP_ZEROCOPY */,
+    .sxdp_flags = 0 /* XDP_ZEROCOPY */,
     .sxdp_ifindex = netif_id,
     .sxdp_queue_id = 0,
     .sxdp_shared_umem_fd = 0,
@@ -176,47 +177,20 @@ int main(int argc, char *argv[argc]) {
     goto cleanup;
   }
 
-  struct xdp_program *prog = nullptr;
-  struct bpf_object *bpf_obj = bpf_object__open_file("build/pf.bpf.o", nullptr);
-  if (libbpf_get_error(bpf_obj)) {
-    fprintf(stderr, "Failed to open BPF object: %s\n", strerror(errno));
-    goto cleanup;
+  int map_fd = bpf_obj_get("/sys/fs/bpf/xdp/globals/xsks_map");
+  if (map_fd < 0) {
+      fprintf(stderr, "xsks_map not found\n");
+      exit(1);
   }
 
-  if (bpf_object__load(bpf_obj) < 0) {
-    fprintf(stderr, "Failed to load BPF object: %s\n", strerror(errno));
-    goto cleanup;
-  }
-
-  struct bpf_map *map = bpf_object__find_map_by_name(bpf_obj, "xsks_map");
-  if (map == nullptr) {
-    fprintf(stderr, "Failed to find xsks_map\n");
-    goto cleanup;
-  }
-
-  int map_fd = bpf_map__fd(map);
   uint32_t key = 0;
-
-  int value = sockfd;
-  if (bpf_map_update_elem(map_fd, &key, &value, BPF_ANY) < 0) {
-    fprintf(stderr, "Failed to update xsks_map");
-    goto cleanup;
+  int value = sockfd;   // your AF_XDP socket fd
+  int ret = bpf_map_update_elem(map_fd, &key, &value, BPF_ANY);
+  if (ret < 0) {
+      fprintf(stderr, "Failed to update xsks_map: %s (errno=%d)\n", strerror(errno), errno);
+      exit(1);
   }
-
-  prog = xdp_program__from_bpf_obj(bpf_obj, "xdp_prog.o");
-
-  if (prog == nullptr) {
-    fprintf(stderr, "Failed to create xdp_program\n");
-    goto cleanup;
-  }
-
-  if (xdp_program__attach(prog, netif_id, XDP_MODE_NATIVE, 0) < 0) {
-    fprintf(stderr, "Failed to attach XDP program: %s\n", strerror(errno));
-    goto cleanup;
-  } 
-
-
-
+  printf("XSKMAP updated: key:%u fd:%d\n", key, value);
 
   uint32_t fill_count = RING_SIZE;
   for (int i = 0; i < fill_count; i++) {
@@ -231,12 +205,12 @@ int main(int argc, char *argv[argc]) {
   uint32_t fr_prod = *fr_ring_producer;
 
   while (true) {
-    struct pollfd pfd = { .fd = sockfd, .events = POLLIN | POLLOUT };
-    int ret = poll(&pfd, 1, -1);   // wait forever
-    if (ret < 0) {
-        perror("poll");
-        break;
-    }
+    //struct pollfd pfd = { .fd = sockfd, .events = POLLIN | POLLOUT };
+    //int ret = poll(&pfd, 1, -1);   // wait forever
+    //if (ret < 0) {
+    //    perror("poll");
+    //    break;
+    //}
 
     for (; ;) {
       uint32_t rx_prod = atomic_load_explicit(rx_ring_producer, memory_order_acquire);

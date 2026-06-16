@@ -20,16 +20,20 @@ struct {
     __uint(type, BPF_MAP_TYPE_XSKMAP);
     __type(key, __u32);
     __type(value, __u32);
-    __uint(max_entries, 1);
+    __uint(max_entries, 64);
+    __uint(pinning, LIBBPF_PIN_BY_NAME);
 } xsks_map SEC(".maps");
 
 SEC("xdp")
 int xdp_pf(struct xdp_md *ctx) {
   __u32 queue_id = ctx->rx_queue_index;
+  bpf_printk("queue_id: %d", queue_id);
   if (bpf_map_lookup_elem(&xsks_map, &queue_id)) {
     bpf_printk("Redirected to userspace");
     return bpf_redirect_map(&xsks_map, queue_id, 0);
   }
+  //__u32 key = 0;
+  //return bpf_redirect_map(&xsks_map, key, 0);
 
   bpf_printk("Redirected to kernel NS");
   return XDP_PASS;
