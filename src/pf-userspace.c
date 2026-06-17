@@ -1,3 +1,4 @@
+#include <bpf/bpf.h>
 #include <bpf/libbpf.h>
 #include <errno.h>
 #include <linux/if_xdp.h>
@@ -19,7 +20,10 @@
 
 #include "protocols.h"
 
-#define BPF_OBJECT_PATH build/pf.bpf.o
+#define BPF_OBJECT_PATH "build/pf.bpf.o"
+
+#define PF_FD_MAP_PIN_PATH "/sys/fs/bpf/xdp/globals/pf_fd_map"
+#define XSKS_MAP_PIN_PATH "/sys/fs/bpf/xdp/globals/pf_fd_map"
 
 #define CHUNK_SIZE 4096
 #define CHUNK_COUNT 4096
@@ -38,8 +42,8 @@
 #define SET_MMAP_RING(name, size) void * name##_ring_mmap = mmap(NULL, offsets. name .desc + RING_SIZE * size, PROT_READ|PROT_WRITE, MAP_SHARED|MAP_POPULATE, sockfd, name##_RING) 
 #define UNMAP_MMAP_RING(name, size) munmap( name##_ring_mmap ,  offsets. name .desc + RING_SIZE * size)
 
-#define SET_RING_CONSUMER(name) atomic_uint_least32_t * name##_ring_consumer = (atomic_uint_least32_t *)( (char *) name##_ring_mmap + offsets. name .consumer )
-#define SET_RING_PRODUCER(name) atomic_uint_least32_t * name##_ring_producer = (atomic_uint_least32_t *)( (char *) name##_ring_mmap + offsets. name .producer )
+#define SET_RING_CONSUMER(name) __u32 * name##_ring_consumer = (__u32 *)( (char *) name##_ring_mmap + offsets. name .consumer )
+#define SET_RING_PRODUCER(name) __u32 * name##_ring_producer = (__u32 *)( (char *) name##_ring_mmap + offsets. name .producer )
 
 static const __u32 RING_SIZE = 4096;
 
@@ -67,10 +71,12 @@ void handle_sigint(int sig) {
   exit(EXIT_SUCCESS);
 }
 
+
 int main(int argc, char *argv[argc]) {
 
   if (argc < 2) {
     fprintf(stderr, "Usage: %s [INTERFACE]", argv[0]);
+    return EXIT_FAILURE;
   }
 
   unsigned int netif_id = if_nametoindex(argv[1]);
@@ -156,13 +162,13 @@ int main(int argc, char *argv[argc]) {
   SET_RING_PRODUCER(tx);
   SET_RING_PRODUCER(fr);
   SET_RING_PRODUCER(cr);
-  
+
   struct xdp_desc *rx_ring = (struct xdp_desc *)((char *)rx_ring_mmap + offsets.rx.desc);
   struct xdp_desc *tx_ring = (struct xdp_desc *)((char *)tx_ring_mmap + offsets.tx.desc);
   uint64_t *fr_ring = (uint64_t *)((char *)fr_ring_mmap + offsets.fr.desc);
   uint64_t *cr_ring = (uint64_t *)((char *)cr_ring_mmap + offsets.cr.desc);
 
-  
+
   struct sockaddr_xdp sockaddr = {
     .sxdp_family = AF_XDP,
     .sxdp_flags = 0 /* XDP_ZEROCOPY */,
@@ -204,16 +210,21 @@ int main(int argc, char *argv[argc]) {
   uint32_t cr_cons = *cr_ring_consumer;
   uint32_t fr_prod = *fr_ring_producer;
 
+
+
   while (true) {
-    //struct pollfd pfd = { .fd = sockfd, .events = POLLIN | POLLOUT };
-    //int ret = poll(&pfd, 1, -1);   // wait forever
-    //if (ret < 0) {
-    //    perror("poll");
-    //    break;
-    //}
+    struct pollfd pfd = { .fd = sockfd, .events = POLLIN | POLLOUT };
+    printf("Waiting for packets\n");
+    int ret = poll(&pfd, 1, -1);   // wait forever
+    if (ret < 0) {
+        fprintf(stderr, "Poll error: %s", strerror(errno));
+        break;
+    }
+
 
     for (; ;) {
       uint32_t rx_prod = atomic_load_explicit(rx_ring_producer, memory_order_acquire);
+      printf("rx_ring_producer: %u\n", rx_prod);
       while (rx_cons != rx_prod) {
         printf("Got a packet!");
         struct xdp_desc desc = rx_ring[rx_cons];
@@ -269,7 +280,7 @@ tx_fail:
   UNMAP_MMAP_RING(rx, RING_SIZE_DESC);
 initial_fail:
   munmap(umem_area, UMEM_SIZE);
-  
+
   close(sockfd);
   //buffer = aligned_alloc(getpagesize(), UMEM_SIZE);
   //xsk_umem__create(&umem_area, buffer, UMEM_SIZE, struct xsk_ring_prod *fill, struct xsk_ring_cons *comp, const struct xsk_umem_config *config);
