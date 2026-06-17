@@ -20,6 +20,12 @@
 #include <linux/if_link.h>
 
 #include "protocols.h"
+#include "xsk_umem_info.h"
+
+
+#define DEFAULT_ERROR_MESSAGE_BUFFER_SIZE 1024
+
+#define EXPECTED_HW_RING_SIZE 512
 
 #define BPF_OBJECT_PATH "build/pf.bpf.o"
 
@@ -28,6 +34,10 @@
 
 #define CHUNK_SIZE 4096
 #define CHUNK_COUNT 4096
+
+#ifndef max
+#define max(a,b) a < b? a: b
+#endif
 
 #define UMEM_SIZE (CHUNK_SIZE * CHUNK_COUNT)
 
@@ -52,6 +62,18 @@ static const __u32 RING_SIZE = 4096;
 static void *umem_area = NULL;
 static int sockfd = 0;
 
+static inline int remove_memlimit(void) {
+  struct rlimit r = {
+    .rlim_cur = RLIM_INFINITY,
+    .rlim_max = RLIM_INFINITY,
+  };
+  if (setrlimit(RLIMIT_MEMLOCK, &r)) {
+    fprintf(stderr, "Error: Failed to unlock memory limit \"%s\"\n", strerror(errno));
+		return EXIT_FAILURE;
+  }
+  return EXIT_SUCCESS;
+}
+
 static inline void setxdgsockopt(int sockfd, const __u32 *ring_size, const int optname, const char * restrict optname_s){
   if(setsockopt(sockfd, SOL_XDP, optname, ring_size, sizeof(*ring_size)) < 0) {
     fprintf(stderr, "Failed to set XSK %s buffer: %s\n", optname_s, strerror(errno));
@@ -72,61 +94,73 @@ void handle_sigint(int sig) {
   exit(EXIT_SUCCESS);
 }
 
-int load_bpf_prog(int netif_id, struct bpf_object **bpf_obj, struct bpf_program **bpf_prog) {
+int load_bpf_prog(int netif_id, struct xdp_program **bpf_prog) {
+  char errbuff[1024];
   int err = 0;
-  struct bpf_object *obj = bpf_object__open_file("build/pf.bpf.o", nullptr);
 
-  if (obj == nullptr) {
-    fprintf(stderr, "Failed to open BPF object: %s\n", strerror(errno));
+  auto prog = xdp_program__open_file("build/pf.bpf.o", "xdp", nullptr);
+  err = libxdp_get_error(prog);
+  if (err) {
+    libxdp_strerror(err, errbuff, sizeof(errbuff)/sizeof(errbuff[0]) - 1);
+    fprintf(stderr, "ERROR: program loading failed: %s\n", errbuff);
+    EXIT_FAILURE;
+  }
+  printf("Loaded XDP program: %p\n", prog);
+
+  err = xdp_program__attach(prog, netif_id, XDP_MODE_UNSPEC, 0);
+  if (err) {
+    libxdp_strerror(err, errbuff, sizeof(errbuff)/sizeof(errbuff[0]) - 1);
+    fprintf(stderr, "ERROR: program attaching failed: %s\n", errbuff);
     return EXIT_FAILURE;
   }
-  printf("Opened BPF object: %p\n", obj);
+  printf("Attached XDP program: %p\n", prog);
 
-  err = bpf_object__load(obj);
-  if (err < 0) {
-    fprintf(stderr, "Failed to load BPF object: %s\n", strerror(errno));
-    return EXIT_FAILURE;
-  }
-
-  struct bpf_program *prog = bpf_object__find_program_by_name(obj, "xdp_pf");
-  
-  if (prog == nullptr) {
-    fprintf(stderr, "Failed to open BPF program: %s\n", strerror(errno));
-    return EXIT_FAILURE;
-  }
-
-  printf("Opened XDP program: %p\n", prog);
-  int progfd = bpf_program__fd(prog);
-  if (progfd < 0) {
-    fprintf(stderr, "Failed retrieve the fd of XDP program: %s\n", strerror(errno));
-    return EXIT_FAILURE;
-  }
-
-  printf("Got program fd: %d\n", progfd);
-
-  err = bpf_xdp_attach(netif_id, progfd, XDP_FLAGS_SKB_MODE, nullptr);
-
-  if (err < 0) {
-    fprintf(stderr, "Failed to attach an XDP program: %s\n", strerror(errno));
-    return EXIT_FAILURE;
-  }
-
-  *bpf_obj = obj;
   *bpf_prog = prog;
 
   return EXIT_SUCCESS;
 }
 
-static inline int remove_memlimit(void) {
-  struct rlimit r = {
-    .rlim_cur = RLIM_INFINITY,
-    .rlim_max = RLIM_INFINITY,
-  };
-  if (setrlimit(RLIMIT_MEMLOCK, &r)) {
-    fprintf(stderr, "Error: Failed to unlock memory limit \"%s\"\n", strerror(errno));
-		return EXIT_FAILURE;
+
+int cleanup_xdp_progs(int netif_id, struct xdp_program *prog){
+  char buffer[DEFAULT_ERROR_MESSAGE_BUFFER_SIZE];
+  int err = 0;
+  bool fail = false;
+  
+  err = xdp_program__detach(prog, netif_id, XDP_MODE_UNSPEC, 0);
+  if (err < 0) {
+    libxdp_strerror(err, buffer, DEFAULT_ERROR_MESSAGE_BUFFER_SIZE - 1);
+    fprintf(stderr, "Failed to detach an XDP program: %s\n", strerror(errno));
+    return EXIT_FAILURE;
   }
+  printf("Detached XDP program\n");
+
+  xdp_program__close(prog);
   return EXIT_SUCCESS;
+}
+
+static struct xsk_umem_info *xsk_configure_umem(void *buffer, uint64_t size) {
+  int err = 0;
+  struct xsk_umem_config cfg = {
+    .fill_size = max(XSK_RING_PROD__DEFAULT_NUM_DESCS, RING_SIZE) * 2,
+    .comp_size = max(XSK_RING_PROD__DEFAULT_NUM_DESCS, RING_SIZE),
+    .frame_size = XSK_UMEM__DEFAULT_FRAME_SIZE,
+    .frame_headroom = XSK_UMEM__DEFAULT_FRAME_HEADROOM,
+    .flags = 0
+  };
+
+  struct xsk_umem_info *umem = calloc(1, sizeof(*umem));
+
+  if (!umem) {
+    fprintf(stderr, "Failed to allocate xsk_umem_info: %s\n", strerror(errno));
+    return EXIT_FAILURE;
+  }
+  err = xsk_umem__create(&umem->umem, umem_area, size, &umem->fq, &umem->cq, &cfg);
+  if (err) {
+    return nullptr;
+  }
+
+  umem->buffer = umem_area;
+  return umem;
 }
 
 int main(int argc, char *argv[argc]) {
@@ -144,56 +178,42 @@ int main(int argc, char *argv[argc]) {
   
 
   unsigned int netif_id = if_nametoindex(argv[1]);
-
   if (netif_id == 0) {
     fprintf(stderr, "Failed to lookup network interface id: %s\n", strerror(errno));
     return EXIT_FAILURE;
   }
   printf("Looked up netif_id: %u\n", netif_id);
 
-  //auto prog = xdp_program__open_file("build/pf.bpf.o", "xdp", nullptr);
-  //err = libxdp_get_error(prog);
-  //if (err) {
-  //  char buffer[1024];
-  //  libxdp_strerror(err, buffer, sizeof(buffer)/sizeof(buffer[0]) - 1);
-  //  fprintf(stderr, "ERROR: program loading failed: %s\n", buffer);
-  //  exit(EXIT_FAILURE);
-  //}
-  //printf("Loaded XDP program: %p\n", prog);
-  //
-  //err = xdp_program__attach(prog, netif_id, XDP_MODE_UNSPEC, 0);
-  //
-  //if (err) {
-  //  char buffer[1024];
-  //  libxdp_strerror(err, buffer, sizeof(buffer)/sizeof(buffer[0]) - 1);
-  //  fprintf(stderr, "ERROR: program attaching failed: %s\n", buffer);
-  //  exit(EXIT_FAILURE);
-  //}
-  //printf("Attached XDP program: %p\n", prog);
-  //exit(EXIT_SUCCESS);
   
-  struct bpf_object *obj = nullptr;
-  struct bpf_program *prog = nullptr;
-  err = load_bpf_prog(netif_id, &obj, &prog);
+  struct xdp_program *prog = nullptr;
+  err = load_bpf_prog(netif_id, &prog);
 
   if (err != EXIT_SUCCESS) {
-    fprintf(stderr, "Failed to load BPF program");
+    fprintf(stderr, "Failed to load BPF program\n");
     return EXIT_FAILURE;
   }
 
-  err = bpf_xdp_detach(netif_id, 0, nullptr);
-  if (err < 0) {
-    fprintf(stderr, "Failed to detach an XDP program: %s\n", strerror(errno));
-    return EXIT_FAILURE;
+  umem_area = mmap(nullptr, CHUNK_SIZE * CHUNK_COUNT, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+  if (umem_area == MAP_FAILED) {
+    fprintf(stderr, "Failed to allocate umem_area\n");
+    goto cleanup;
   }
-  printf("Detached XDP program\n");
 
-  if (obj != nullptr) {
-    bpf_object__close(obj);
-    printf("Closed BPF object\n");
-  }
+  struct xsk_umem_info *umem = xsk_configure_umem(umem_area, CHUNK_SIZE * CHUNK_COUNT);
+
 
   struct xsk_umem_opts opts = {};
+
+  //xsk_umem__create_opts(void *umem_area, struct xsk_ring_prod *fill, struct xsk_ring_cons *comp, struct xsk_umem_opts *opts)
+
+cleanup:
+
+  err = cleanup_xdp_progs(netif_id, prog);
+  if (err != EXIT_SUCCESS) {
+    fprintf(stderr, "Failed to unload BPF program\n");
+    return EXIT_FAILURE;
+  }
+
 
   return EXIT_SUCCESS;
 }
