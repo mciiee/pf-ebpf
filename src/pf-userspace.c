@@ -31,14 +31,18 @@
 
 #define XSKS_MAP_PIN_PATH "/sys/fs/bpf/xdp/globals/xsks_map"
 
-#define CHUNK_SIZE 4096
-#define CHUNK_COUNT 4096
+//#define CHUNK_SIZE 4096
+//#define CHUNK_COUNT 4096
+
+#define NUM_FRAMES 4096
+#define FRAME_SIZE XSK_UMEM__DEFAULT_FRAME_SIZE
+#define UMEM_SIZE (NUM_FRAMES * FRAME_SIZE)
 
 #ifndef max
 #define max(a,b) a < b? a: b
 #endif
 
-#define UMEM_SIZE (CHUNK_SIZE * CHUNK_COUNT)
+//#define UMEM_SIZE (CHUNK_SIZE * CHUNK_COUNT)
 
 #define RING_SIZE_DESC   (sizeof(struct xdp_desc))  // RX / TX
 #define RING_SIZE_UMEM   (sizeof(__u64))            // FILL / COMPLETION
@@ -55,7 +59,8 @@
 #define SET_RING_CONSUMER(name) __u32 * name##_ring_consumer = (__u32 *)( (char *) name##_ring_mmap + offsets. name .consumer )
 #define SET_RING_PRODUCER(name) __u32 * name##_ring_producer = (__u32 *)( (char *) name##_ring_mmap + offsets. name .producer )
 
-static const __u32 RING_SIZE = 4096;
+//static const __u32 RING_SIZE = 4096;
+constexpr __u32 RING_SIZE = 2048;
 
 //struct xsk_socket *xsk;
 static void *umem_area = NULL;
@@ -137,29 +142,60 @@ int cleanup_xdp_progs(int netif_id, struct xdp_program *prog){
   return EXIT_SUCCESS;
 }
 
-static struct xsk_umem_info *xsk_configure_umem(void *buffer, uint64_t size) {
+enum ErrorJump: uint64_t {
+  ERROR_JUMP_NO_ERROR = 0,
+  ERROR_JUMP_UMEM_CLEANUP = 0x1,
+  ERROR_JUMP_XDP_PROG_CLEANUP= 0x2
+  
+};
+
+enum ErrorJump xsk_configure_umem(struct xsk_umem **umem, struct xsk_ring_prod *fill_ring, struct xsk_ring_cons *comp_ring) {
+  char errbuf[DEFAULT_ERROR_MESSAGE_BUFFER_SIZE];
   int err = 0;
-  struct xsk_umem_config cfg = {
-    .fill_size = max(XSK_RING_PROD__DEFAULT_NUM_DESCS, RING_SIZE) * 2,
-    .comp_size = max(XSK_RING_PROD__DEFAULT_NUM_DESCS, RING_SIZE),
-    .frame_size = XSK_UMEM__DEFAULT_FRAME_SIZE,
+
+  umem_area = mmap(nullptr, UMEM_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+  if (umem_area == MAP_FAILED) {
+    fprintf(stderr, "Failed to allocate umem_area\n");
+    return ERROR_JUMP_UMEM_CLEANUP;
+  }
+
+  struct xsk_umem_config umem_cfg = {
+    .fill_size = RING_SIZE,
+    .comp_size = RING_SIZE,
+    .frame_size = FRAME_SIZE,
     .frame_headroom = XSK_UMEM__DEFAULT_FRAME_HEADROOM,
     .flags = 0
   };
 
-  struct xsk_umem_info *umem = calloc(1, sizeof(*umem));
-
-  if (!umem) {
-    fprintf(stderr, "Failed to allocate xsk_umem_info: %s\n", strerror(errno));
-    return EXIT_FAILURE;
-  }
-  err = xsk_umem__create(&umem->umem, umem_area, size, &umem->fq, &umem->cq, &cfg);
+  err = xsk_umem__create(umem, umem_area, UMEM_SIZE, fill_ring, comp_ring, &umem_cfg);
   if (err) {
-    return nullptr;
+    fprintf(stderr, "Failed to create UMEM: %s\n", strerror(-err));
+    return ERROR_JUMP_XDP_PROG_CLEANUP;
   }
 
-  umem->buffer = umem_area;
-  return umem;
+  return ERROR_JUMP_NO_ERROR;
+}
+
+enum ErrorJump xsk_configure_socket(const char *iface, struct xsk_umem *umem, struct xsk_socket **xsk, struct xsk_ring_prod *tx_ring, struct xsk_ring_cons *rx_ring) {
+  int err = 0;
+  struct xsk_socket_config cfg = {
+        .rx_size = RING_SIZE,
+        .tx_size = RING_SIZE,
+        .libbpf_flags = 0,
+        // IMPORTANT: Change if necessary
+        .xdp_flags = XDP_FLAGS_SKB_MODE,
+        .bind_flags = 0,
+  };
+
+  err = xsk_socket__create(xsk, iface, 0, umem, rx_ring, tx_ring, &cfg);
+
+  if (err) {
+    fprintf(stderr, "Failed to create AF_XDP socket: %s\n", strerror(-err));
+    return ERROR_JUMP_UMEM_CLEANUP;
+  }
+
+
+  return 0;
 }
 
 int main(int argc, char *argv[argc]) {
@@ -167,6 +203,8 @@ int main(int argc, char *argv[argc]) {
     fprintf(stderr, "Usage: %s [INTERFACE]", argv[0]);
     return EXIT_FAILURE;
   }
+
+  const char *iface = argv[1];
 
   int err = 0;
 
@@ -176,7 +214,7 @@ int main(int argc, char *argv[argc]) {
   }
   
 
-  unsigned int netif_id = if_nametoindex(argv[1]);
+  unsigned int netif_id = if_nametoindex(iface);
   if (netif_id == 0) {
     fprintf(stderr, "Failed to lookup network interface id: %s\n", strerror(errno));
     return EXIT_FAILURE;
@@ -192,20 +230,41 @@ int main(int argc, char *argv[argc]) {
     return EXIT_FAILURE;
   }
 
-  umem_area = mmap(nullptr, CHUNK_SIZE * CHUNK_COUNT, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+  umem_area = mmap(nullptr, UMEM_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
   if (umem_area == MAP_FAILED) {
     fprintf(stderr, "Failed to allocate umem_area\n");
-    goto cleanup;
+    goto umem_cleanup;
+  }
+  printf("Allocated umem_area\n");
+
+  struct xsk_umem *umem = nullptr;
+  struct xsk_ring_prod fill_ring;
+  struct xsk_ring_cons comp_ring;
+
+
+  enum ErrorJump errjump = xsk_configure_umem(&umem, &fill_ring, &comp_ring);
+
+  switch (errjump) {
+    case ERROR_JUMP_UMEM_CLEANUP:
+      goto umem_cleanup;
+    case ERROR_JUMP_XDP_PROG_CLEANUP:
+      goto xdp_prog_cleanup;
+    default:
+      break;
   }
 
-  struct xsk_umem_info *umem = xsk_configure_umem(umem_area, CHUNK_SIZE * CHUNK_COUNT);
 
-
-  struct xsk_umem_opts opts = {};
 
   //xsk_umem__create_opts(void *umem_area, struct xsk_ring_prod *fill, struct xsk_ring_cons *comp, struct xsk_umem_opts *opts)
+  
 
-cleanup:
+
+umem_cleanup:
+  
+    munmap(umem_area, UMEM_SIZE);
+    printf("Deallocated umem_area\n");
+
+xdp_prog_cleanup:
 
   err = cleanup_xdp_progs(netif_id, prog);
   if (err != EXIT_SUCCESS) {
