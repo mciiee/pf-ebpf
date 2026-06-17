@@ -17,11 +17,11 @@
 #define IF_DEBUG(stmt)
 #endif
 
-//struct {
-//	__uint(priority, 10);
-//	__uint(XDP_PASS, 1);
-//	__uint(XDP_DROP, 1);
-//} XDP_RUN_CONFIG(my_xdp_func);
+struct {
+	__uint(priority, 10);
+	__uint(XDP_PASS, 1);
+	__uint(XDP_DROP, 1);
+} XDP_RUN_CONFIG(my_xdp_func);
 
 
 //struct {
