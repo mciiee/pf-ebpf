@@ -19,8 +19,10 @@
 
 #include <linux/if_link.h>
 
+#include "log.h"
 #include "protocols.h"
 #include "xsk_umem_info.h"
+#include "ErrorJump.h"
 
 
 #define DEFAULT_ERROR_MESSAGE_BUFFER_SIZE 1024
@@ -72,7 +74,7 @@ static inline int remove_memlimit(void) {
     .rlim_max = RLIM_INFINITY,
   };
   if (setrlimit(RLIMIT_MEMLOCK, &r)) {
-    fprintf(stderr, "Error: Failed to unlock memory limit \"%s\"\n", strerror(errno));
+    LOG_ERROR("Error: Failed to unlock memory limit \"%s\"\n", strerror(errno));
 		return EXIT_FAILURE;
   }
   return EXIT_SUCCESS;
@@ -80,7 +82,7 @@ static inline int remove_memlimit(void) {
 
 static inline void setxdgsockopt(int sockfd, const __u32 *ring_size, const int optname, const char * restrict optname_s){
   if(setsockopt(sockfd, SOL_XDP, optname, ring_size, sizeof(*ring_size)) < 0) {
-    fprintf(stderr, "Failed to set XSK %s buffer: %s\n", optname_s, strerror(errno));
+    LOG_ERROR("Failed to set XSK %s buffer: %s\n", optname_s, strerror(errno));
     munmap(umem_area, UMEM_SIZE);
     exit(EXIT_FAILURE);
   }
@@ -88,11 +90,11 @@ static inline void setxdgsockopt(int sockfd, const __u32 *ring_size, const int o
 
 static void handle_packet(const uint8_t *packet) {
   uint16_t l2proto = *(uint16_t *)(packet + ETHERNET_PROTOCOL_OFFSET);
-  printf("Protocol: 0x%02X", l2proto);
+  LOG_PRINT("Protocol: 0x%02X", l2proto);
 }
 
 static void handle_sigint(int sig) {
-  fprintf(stderr, "Caught sigint, cleaning up...\n");
+  LOG_ERROR("Caught sigint, cleaning up...\n");
   munmap(umem_area, UMEM_SIZE);
   close(sockfd);
   exit(EXIT_SUCCESS);
@@ -106,18 +108,18 @@ int load_bpf_prog(int netif_id, struct xdp_program **bpf_prog) {
   err = libxdp_get_error(prog);
   if (err) {
     libxdp_strerror(err, errbuff, sizeof(errbuff)/sizeof(errbuff[0]) - 1);
-    fprintf(stderr, "ERROR: program loading failed: %s\n", errbuff);
+    LOG_ERROR("ERROR: program loading failed: %s\n", errbuff);
     EXIT_FAILURE;
   }
-  printf("Loaded XDP program: %p\n", prog);
+  LOG_PRINT("Loaded XDP program: %p\n", prog);
 
   err = xdp_program__attach(prog, netif_id, XDP_MODE_UNSPEC, 0);
   if (err) {
     libxdp_strerror(err, errbuff, sizeof(errbuff)/sizeof(errbuff[0]) - 1);
-    fprintf(stderr, "ERROR: program attaching failed: %s\n", errbuff);
+    LOG_ERROR("ERROR: program attaching failed: %s\n", errbuff);
     return EXIT_FAILURE;
   }
-  printf("Attached XDP program: %p\n", prog);
+  LOG_PRINT("Attached XDP program: %p\n", prog);
 
   *bpf_prog = prog;
 
@@ -133,21 +135,15 @@ int cleanup_xdp_progs(int netif_id, struct xdp_program *prog){
   err = xdp_program__detach(prog, netif_id, XDP_MODE_UNSPEC, 0);
   if (err < 0) {
     libxdp_strerror(err, buffer, DEFAULT_ERROR_MESSAGE_BUFFER_SIZE - 1);
-    fprintf(stderr, "Failed to detach an XDP program: %s\n", strerror(errno));
+    LOG_ERROR("Failed to detach an XDP program: %s\n", strerror(errno));
     return EXIT_FAILURE;
   }
-  printf("Detached XDP program\n");
+  LOG_PRINT("Detached XDP program\n");
 
   xdp_program__close(prog);
   return EXIT_SUCCESS;
 }
 
-enum ErrorJump: uint64_t {
-  ERROR_JUMP_NO_ERROR = 0,
-  ERROR_JUMP_UMEM_CLEANUP = 0x1,
-  ERROR_JUMP_XDP_PROG_CLEANUP= 0x2
-  
-};
 
 enum ErrorJump xsk_configure_umem(struct xsk_umem **umem, struct xsk_ring_prod *fill_ring, struct xsk_ring_cons *comp_ring) {
   char errbuf[DEFAULT_ERROR_MESSAGE_BUFFER_SIZE];
@@ -155,7 +151,7 @@ enum ErrorJump xsk_configure_umem(struct xsk_umem **umem, struct xsk_ring_prod *
 
   umem_area = mmap(nullptr, UMEM_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
   if (umem_area == MAP_FAILED) {
-    fprintf(stderr, "Failed to allocate umem_area\n");
+    LOG_ERROR("Failed to allocate umem_area\n");
     return ERROR_JUMP_UMEM_CLEANUP;
   }
 
@@ -169,9 +165,11 @@ enum ErrorJump xsk_configure_umem(struct xsk_umem **umem, struct xsk_ring_prod *
 
   err = xsk_umem__create(umem, umem_area, UMEM_SIZE, fill_ring, comp_ring, &umem_cfg);
   if (err) {
-    fprintf(stderr, "Failed to create UMEM: %s\n", strerror(-err));
+    LOG_ERROR("Failed to create UMEM: %s\n", strerror(-err));
     return ERROR_JUMP_XDP_PROG_CLEANUP;
   }
+
+  LOG_PRINT("Configured UMEM");
 
   return ERROR_JUMP_NO_ERROR;
 }
@@ -190,17 +188,26 @@ enum ErrorJump xsk_configure_socket(const char *iface, struct xsk_umem *umem, st
   err = xsk_socket__create(xsk, iface, 0, umem, rx_ring, tx_ring, &cfg);
 
   if (err) {
-    fprintf(stderr, "Failed to create AF_XDP socket: %s\n", strerror(-err));
+    LOG_ERROR("Failed to create AF_XDP socket: %s\n", strerror(-err));
     return ERROR_JUMP_UMEM_CLEANUP;
   }
-
 
   return 0;
 }
 
+#define ERROR_JUMP(errjump) \
+  switch (errjump) { \
+    case ERROR_JUMP_UMEM_CLEANUP: \
+      goto umem_cleanup; \
+    case ERROR_JUMP_XDP_PROG_CLEANUP: \
+      goto xdp_prog_cleanup; \
+    default: \
+      break; \
+  } \
+
 int main(int argc, char *argv[argc]) {
   if (argc < 2) {
-    fprintf(stderr, "Usage: %s [INTERFACE]", argv[0]);
+    LOG_ERROR("Usage: %s [INTERFACE]", argv[0]);
     return EXIT_FAILURE;
   }
 
@@ -216,26 +223,26 @@ int main(int argc, char *argv[argc]) {
 
   unsigned int netif_id = if_nametoindex(iface);
   if (netif_id == 0) {
-    fprintf(stderr, "Failed to lookup network interface id: %s\n", strerror(errno));
+    LOG_ERROR("Failed to lookup network interface id: %s\n", strerror(errno));
     return EXIT_FAILURE;
   }
-  printf("Looked up netif_id: %u\n", netif_id);
+  LOG_PRINT("Looked up netif_id: %u\n", netif_id);
 
   
   struct xdp_program *prog = nullptr;
   err = load_bpf_prog(netif_id, &prog);
 
   if (err != EXIT_SUCCESS) {
-    fprintf(stderr, "Failed to load BPF program\n");
+    LOG_ERROR("Failed to load BPF program\n");
     return EXIT_FAILURE;
   }
 
   umem_area = mmap(nullptr, UMEM_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
   if (umem_area == MAP_FAILED) {
-    fprintf(stderr, "Failed to allocate umem_area\n");
+    LOG_ERROR("Failed to allocate umem_area\n");
     goto umem_cleanup;
   }
-  printf("Allocated umem_area\n");
+  LOG_PRINT("Allocated umem_area\n");
 
   struct xsk_umem *umem = nullptr;
   struct xsk_ring_prod fill_ring;
@@ -244,31 +251,27 @@ int main(int argc, char *argv[argc]) {
 
   enum ErrorJump errjump = xsk_configure_umem(&umem, &fill_ring, &comp_ring);
 
-  switch (errjump) {
-    case ERROR_JUMP_UMEM_CLEANUP:
-      goto umem_cleanup;
-    case ERROR_JUMP_XDP_PROG_CLEANUP:
-      goto xdp_prog_cleanup;
-    default:
-      break;
-  }
+  ERROR_JUMP(errjump);
 
+  struct xsk_ring_prod tx_ring;
+  struct xsk_ring_cons rx_ring;
+  struct xsk_socket *xsk = nullptr;
 
+  errjump = xsk_configure_socket(iface, umem, &xsk, &tx_ring, &rx_ring);
 
-  //xsk_umem__create_opts(void *umem_area, struct xsk_ring_prod *fill, struct xsk_ring_cons *comp, struct xsk_umem_opts *opts)
-  
+  ERROR_JUMP(errjump);
 
 
 umem_cleanup:
   
     munmap(umem_area, UMEM_SIZE);
-    printf("Deallocated umem_area\n");
+    LOG_PRINT("Deallocated umem_area\n");
 
 xdp_prog_cleanup:
 
   err = cleanup_xdp_progs(netif_id, prog);
   if (err != EXIT_SUCCESS) {
-    fprintf(stderr, "Failed to unload BPF program\n");
+    LOG_ERROR("Failed to unload BPF program\n");
     return EXIT_FAILURE;
   }
 
