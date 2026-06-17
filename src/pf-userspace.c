@@ -169,7 +169,7 @@ enum ErrorJump xsk_configure_umem(struct xsk_umem **umem, struct xsk_ring_prod *
     return ERROR_JUMP_XDP_PROG_CLEANUP;
   }
 
-  LOG_PRINT("Configured UMEM");
+  LOG_PRINT("Configured UMEM\n");
 
   return ERROR_JUMP_NO_ERROR;
 }
