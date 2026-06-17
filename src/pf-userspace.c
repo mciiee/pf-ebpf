@@ -61,8 +61,23 @@
 #define SET_RING_CONSUMER(name) __u32 * name##_ring_consumer = (__u32 *)( (char *) name##_ring_mmap + offsets. name .consumer )
 #define SET_RING_PRODUCER(name) __u32 * name##_ring_producer = (__u32 *)( (char *) name##_ring_mmap + offsets. name .producer )
 
+
+#define ERROR_JUMP(errjump) \
+  switch (errjump) { \
+    case ERROR_JUMP_UMEM_CLEANUP: \
+      goto umem_cleanup; \
+    case ERROR_JUMP_XDP_PROG_CLEANUP: \
+      goto xdp_prog_cleanup; \
+    case ERROR_JUMP_SOCKET_CLEANUP: \
+      goto socket_cleanup; \
+    case ERROR_JUMP_ADDRS_CLEANUP: \
+      goto cleanup; \
+    case ERROR_JUMP_NO_ERROR: \
+      break; \
+  } \
+
 //static const __u32 RING_SIZE = 4096;
-constexpr __u32 RING_SIZE = 2048;
+constexpr __u32 RING_SIZE = 4096;
 
 //struct xsk_socket *xsk;
 static void *umem_area = NULL;
@@ -80,14 +95,6 @@ static inline int remove_memlimit(void) {
   return EXIT_SUCCESS;
 }
 
-static inline void setxdgsockopt(int sockfd, const __u32 *ring_size, const int optname, const char * restrict optname_s){
-  if(setsockopt(sockfd, SOL_XDP, optname, ring_size, sizeof(*ring_size)) < 0) {
-    LOG_ERROR("Failed to set XSK %s buffer: %s\n", optname_s, strerror(errno));
-    munmap(umem_area, UMEM_SIZE);
-    exit(EXIT_FAILURE);
-  }
-}
-
 static void handle_packet(const uint8_t *packet) {
   uint16_t l2proto = *(uint16_t *)(packet + ETHERNET_PROTOCOL_OFFSET);
   LOG_PRINT("Protocol: 0x%02X", l2proto);
@@ -100,7 +107,7 @@ static void handle_sigint(int sig) {
   exit(EXIT_SUCCESS);
 }
 
-int load_bpf_prog(int netif_id, struct xdp_program **bpf_prog) {
+static inline int load_bpf_prog(int netif_id, struct xdp_program **bpf_prog) {
   char errbuff[1024];
   int err = 0;
 
@@ -127,7 +134,7 @@ int load_bpf_prog(int netif_id, struct xdp_program **bpf_prog) {
 }
 
 
-int cleanup_xdp_progs(int netif_id, struct xdp_program *prog){
+static inline int cleanup_xdp_progs(int netif_id, struct xdp_program *prog){
   char buffer[DEFAULT_ERROR_MESSAGE_BUFFER_SIZE];
   int err = 0;
   bool fail = false;
@@ -195,15 +202,34 @@ enum ErrorJump xsk_configure_socket(const char *iface, struct xsk_umem *umem, st
   return 0;
 }
 
-#define ERROR_JUMP(errjump) \
-  switch (errjump) { \
-    case ERROR_JUMP_UMEM_CLEANUP: \
-      goto umem_cleanup; \
-    case ERROR_JUMP_XDP_PROG_CLEANUP: \
-      goto xdp_prog_cleanup; \
-    default: \
-      break; \
-  } \
+enum ErrorJump fill_ring_fill(uint64_t **addrs, struct xsk_ring_prod *fill_ring){
+  *addrs = calloc(NUM_FRAMES, sizeof(uint64_t));
+  if (!addrs) {
+    LOG_ERROR("Failed to allocate memory via calloc: %s\n", strerror(errno));
+    return ERROR_JUMP_SOCKET_CLEANUP;
+  }
+
+  for (size_t i = 0; i < NUM_FRAMES; i++) {
+    addrs[0][i] = i * FRAME_SIZE;
+  }
+
+  uint32_t prod_idx = 0;
+
+  size_t num_reserved = xsk_ring_prod__reserve(fill_ring, NUM_FRAMES, &prod_idx);
+  if (num_reserved != NUM_FRAMES) {
+    LOG_ERROR("Failed to reserve all fill ring entries (got %zu)\n", num_reserved);
+    free(addrs);
+    return ERROR_JUMP_ADDRS_CLEANUP;
+  }
+
+  for (size_t i = 0; i < NUM_FRAMES; i++) {
+    *xsk_ring_prod__fill_addr(fill_ring, prod_idx + i) = addrs[0][i];
+  }
+  xsk_ring_prod__submit(fill_ring, NUM_FRAMES);
+  free(addrs);
+  return ERROR_JUMP_NO_ERROR;
+}
+
 
 int main(int argc, char *argv[argc]) {
   if (argc < 2) {
@@ -237,12 +263,6 @@ int main(int argc, char *argv[argc]) {
     return EXIT_FAILURE;
   }
 
-  umem_area = mmap(nullptr, UMEM_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
-  if (umem_area == MAP_FAILED) {
-    LOG_ERROR("Failed to allocate umem_area\n");
-    goto umem_cleanup;
-  }
-  LOG_PRINT("Allocated umem_area\n");
 
   struct xsk_umem *umem = nullptr;
   struct xsk_ring_prod fill_ring;
@@ -262,8 +282,13 @@ int main(int argc, char *argv[argc]) {
   ERROR_JUMP(errjump);
 
 
+
+cleanup:
+
+socket_cleanup:
+  xsk_socket__delete(xsk);
+
 umem_cleanup:
-  
     munmap(umem_area, UMEM_SIZE);
     LOG_PRINT("Deallocated umem_area\n");
 
