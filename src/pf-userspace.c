@@ -1,4 +1,3 @@
-#include <bpf/bpf.h>
 #include <bpf/libbpf.h>
 #include <errno.h>
 #include <linux/if_xdp.h>
@@ -182,11 +181,11 @@ static void handle_packet(const uint8_t *packet, uint32_t len) {
       LOG_PRINT("Protocol: 0x%02x/0x%04x (%s/IPv6)\n", l3proto, l2proto, getL3ProtocolName(l3proto));
       break;
     case PROTOCOL_ARP:
-      LOG_PRINT("Protocol: 0x0806 (ARP)");
+      LOG_PRINT("Protocol: 0x0806 (ARP)\n");
       break;
     case VLAN_TAG:
       //l2proto = ntohs(*(uint16_t *)(packet + ETHERNET_ETHERTYPE_OFFSET_VLAN));
-      LOG_PRINT("Protocol: [UNKNOWN/VLAN]");
+      LOG_PRINT("Protocol: [UNKNOWN/VLAN]\n");
       break;
     default:
       LOG_PRINT("Protocol: 0x%04x (UNKNOWN)", l2proto);
@@ -324,6 +323,15 @@ enum ErrorJump fill_ring_fill(struct xsk_ring_prod *fill_ring){
 }
 
 
+static atomic_bool analyzer_fail = false;
+void send_to_analyzer(unsigned int analyzer_if_id, int ansockfd, size_t payload_size, void *payload) {
+  if (atomic_load(&analyzer_fail)) {
+    return;
+  }
+
+  write(ansockfd, payload, payload_size);
+}
+
 static inline void packet_loop(struct xsk_socket * xsk, struct xsk_ring_cons *rx_ring,  struct xsk_ring_prod *tx_ring, struct xsk_ring_prod *fill_ring, struct xsk_ring_cons *comp_ring) {
   struct pollfd fds = { .fd = xsk_socket__fd(xsk), .events = POLLIN };
 
@@ -392,13 +400,19 @@ static inline void packet_loop(struct xsk_socket * xsk, struct xsk_ring_cons *rx
   xsk_ring_cons__release(comp_ring, comp_num_available);
 }
 
+static int analyzer_socket_init() {
+  int ansockfd = socket(AF_INET, SOCK_DGRAM, 0);
+  return ansockfd;
+}
+
 int main(int argc, char *argv[argc]) {
-  if (argc < 2) {
-    LOG_ERROR("Usage: %s [INTERFACE]", argv[0]);
+  if (argc < 3) {
+    LOG_ERROR("Usage: %s [READ INTERFACE] [ANALYZER INTERFACE]", argv[0]);
     return EXIT_FAILURE;
   }
 
   const char *iface = argv[1];
+  const char *analyzer_ifname = argv[1];
 
   int err = 0;
 
@@ -414,6 +428,18 @@ int main(int argc, char *argv[argc]) {
     return EXIT_FAILURE;
   }
   LOG_PRINT("Looked up netif_id: %u\n", netif_id);
+
+  unsigned int analyzer_if_id = if_nametoindex(analyzer_ifname);
+  if (analyzer_if_id == 0) {
+    LOG_ERROR("Failed to lookup analyzer network interface id: %s\n", strerror(errno));
+    atomic_store(&analyzer_fail, true);
+  }
+  else {
+    LOG_PRINT("Looked up analyzer netif_id: %u\n", netif_id);
+  }
+
+
+
 
   
   struct xdp_program *prog = nullptr;
