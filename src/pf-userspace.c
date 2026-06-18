@@ -2,6 +2,8 @@
 #include <bpf/libbpf.h>
 #include <errno.h>
 #include <linux/if_xdp.h>
+#include <math.h>
+#include <netinet/in.h>
 #include <signal.h>
 #include <stdatomic.h>
 #include <stdint.h>
@@ -16,12 +18,12 @@
 #include <net/if.h>
 #include <poll.h>
 #include <sys/resource.h>
+#include <arpa/inet.h>
 
 #include <linux/if_link.h>
 
 #include "log.h"
 #include "protocols.h"
-#include "xsk_umem_info.h"
 #include "ErrorJump.h"
 
 
@@ -31,7 +33,7 @@
 
 #define BPF_OBJECT_PATH "build/pf.bpf.o"
 
-#define XSKS_MAP_PIN_PATH "/sys/fs/bpf/xdp/globals/xsks_map"
+#define XSKS_MAP_PIN_PATH "/sys/fs/bpf/xsks_map"
 
 //#define CHUNK_SIZE 4096
 //#define CHUNK_COUNT 4096
@@ -62,6 +64,12 @@
 #define SET_RING_PRODUCER(name) __u32 * name##_ring_producer = (__u32 *)( (char *) name##_ring_mmap + offsets. name .producer )
 
 
+#define ETHERNET_ETHERTYPE_OFFSET 12
+#define ETHERNET_ETHERTYPE_OFFSET_VLAN 16
+#define ETHERNET_HEADER_SIZE 14
+#define IPV6_NEXT_HEADER_OFFSET 6
+#define IPV4_PROTOCOL_OFFSET 9
+
 #define ERROR_JUMP(errjump) \
   switch (errjump) { \
     case ERROR_JUMP_UMEM_CLEANUP: \
@@ -82,6 +90,43 @@ constexpr __u32 RING_SIZE = 4096;
 //struct xsk_socket *xsk;
 static void *umem_area = NULL;
 static int sockfd = 0;
+static atomic_bool run = true;
+
+
+static inline char *getL3ProtocolName(enum L3Protocol proto) {
+  // bpf_printk("[DEBUG] proto: 0x%02x", proto);
+  switch (proto) {
+    case PROTOCOL_ICMP:
+      return "ICMPv4";
+    case PROTOCOL_IGMP:
+      return "IGMP";
+    case PROCOTOL_TCP:
+      return "TCP";
+    case PROTOCOL_UDP:
+      return "UDP";
+    case PROTOCOL_OSPF:
+      return "OSPF";
+    case PROTOCOL_SCTP:
+      return "SCTP";
+    case PROTOCOL_ICMPv6:
+      return "ICMPv6";
+    default:
+      return "UNKNOWN";
+  }
+}
+
+static inline char *getL2ProtocolName(enum L2Protocol proto) {
+  switch (proto) {
+    case PROTOCOL_IPV4:
+      return "IPv4";
+    case PROTOCOL_IPV6:
+      return "IPv6";
+    case PROTOCOL_ARP:
+      return "ARP";
+    default:
+      return "UNKNOWN";
+  }
+}
 
 static inline int remove_memlimit(void) {
   struct rlimit r = {
@@ -95,23 +140,71 @@ static inline int remove_memlimit(void) {
   return EXIT_SUCCESS;
 }
 
-static void handle_packet(const uint8_t *packet) {
-  uint16_t l2proto = *(uint16_t *)(packet + ETHERNET_PROTOCOL_OFFSET);
-  LOG_PRINT("Protocol: 0x%02X", l2proto);
+static int inline parseIPv6(const uint8_t *packet, uint32_t len) {
+  enum L3Protocol proto = packet[ETHERNET_HEADER_SIZE + IPV6_NEXT_HEADER_OFFSET];
+  return proto;
+}
+
+static int inline parseIPv4(const uint8_t *packet, uint32_t len) {
+  enum L3Protocol proto = packet[ETHERNET_HEADER_SIZE + IPV4_PROTOCOL_OFFSET];
+  return proto;
+}
+
+static double calculate_entropy(const uint8_t *packet, const uint32_t len) {
+  uint32_t charmap[256] = {0};
+  double res = 0;
+  for (uint32_t i = 0; i < len; i++) {
+    charmap[packet[i]]++;
+  }
+  for (uint32_t i = 0; i < len; i++) {
+    if (charmap[i] == 0) {
+      continue;
+    }
+    res += ((double)charmap[i])/len  * (log2(len) - log2(charmap[i]));
+  }
+  return res;
+}
+
+static void handle_packet(const uint8_t *packet, uint32_t len) {
+  enum L2Protocol l2proto = ntohs(*(uint16_t *)(packet + ETHERNET_PROTOCOL_OFFSET));
+  enum L3Protocol l3proto = 0;
+  //LOG_PRINT("LL Protocol: 0x%04X\n", l2proto);
+  switch (l2proto) {
+    case PROTOCOL_UNKNOWN:
+      LOG_PRINT("Protocol: UNKNOWN\n");
+      break;
+    case PROTOCOL_IPV4:
+      l3proto = parseIPv4(packet, len);
+      LOG_PRINT("Protocol: 0x%02x/0x%04x (%s/IPv4)\n", l3proto, l2proto, getL3ProtocolName(l3proto));
+      break;
+    case PROTOCOL_IPV6:
+      l3proto = parseIPv6(packet, len);
+      LOG_PRINT("Protocol: 0x%02x/0x%04x (%s/IPv6)\n", l3proto, l2proto, getL3ProtocolName(l3proto));
+      break;
+    case PROTOCOL_ARP:
+      LOG_PRINT("Protocol: 0x0806 (ARP)");
+      break;
+    case VLAN_TAG:
+      //l2proto = ntohs(*(uint16_t *)(packet + ETHERNET_ETHERTYPE_OFFSET_VLAN));
+      LOG_PRINT("Protocol: [UNKNOWN/VLAN]");
+      break;
+    default:
+      LOG_PRINT("Protocol: 0x%04x (UNKNOWN)", l2proto);
+      break;
+  }
+  LOG_PRINT("Entropy: %f\n", calculate_entropy(packet, len));
 }
 
 static void handle_sigint(int sig) {
   LOG_ERROR("Caught sigint, cleaning up...\n");
-  munmap(umem_area, UMEM_SIZE);
-  close(sockfd);
-  exit(EXIT_SUCCESS);
+  atomic_store(&run, false);
 }
 
 static inline int load_bpf_prog(int netif_id, struct xdp_program **bpf_prog) {
   char errbuff[1024];
   int err = 0;
 
-  auto prog = xdp_program__open_file("build/pf.bpf.o", "xdp", nullptr);
+  struct xdp_program *prog = xdp_program__open_file("build/pf.bpf.o", "xdp", nullptr);
   err = libxdp_get_error(prog);
   if (err) {
     libxdp_strerror(err, errbuff, sizeof(errbuff)/sizeof(errbuff[0]) - 1);
@@ -173,7 +266,7 @@ enum ErrorJump xsk_configure_umem(struct xsk_umem **umem, struct xsk_ring_prod *
   err = xsk_umem__create(umem, umem_area, UMEM_SIZE, fill_ring, comp_ring, &umem_cfg);
   if (err) {
     LOG_ERROR("Failed to create UMEM: %s\n", strerror(-err));
-    return ERROR_JUMP_XDP_PROG_CLEANUP;
+    return ERROR_JUMP_UMEM_CLEANUP;
   }
 
   LOG_PRINT("Configured UMEM\n");
@@ -199,18 +292,18 @@ enum ErrorJump xsk_configure_socket(const char *iface, struct xsk_umem *umem, st
     return ERROR_JUMP_UMEM_CLEANUP;
   }
 
-  return 0;
+  return ERROR_JUMP_NO_ERROR;
 }
 
-enum ErrorJump fill_ring_fill(uint64_t **addrs, struct xsk_ring_prod *fill_ring){
-  *addrs = calloc(NUM_FRAMES, sizeof(uint64_t));
+enum ErrorJump fill_ring_fill(struct xsk_ring_prod *fill_ring){
+  uint64_t *addrs = calloc(NUM_FRAMES, sizeof(uint64_t));
   if (!addrs) {
     LOG_ERROR("Failed to allocate memory via calloc: %s\n", strerror(errno));
     return ERROR_JUMP_SOCKET_CLEANUP;
   }
 
   for (size_t i = 0; i < NUM_FRAMES; i++) {
-    addrs[0][i] = i * FRAME_SIZE;
+    addrs[i] = i * FRAME_SIZE;
   }
 
   uint32_t prod_idx = 0;
@@ -223,13 +316,81 @@ enum ErrorJump fill_ring_fill(uint64_t **addrs, struct xsk_ring_prod *fill_ring)
   }
 
   for (size_t i = 0; i < NUM_FRAMES; i++) {
-    *xsk_ring_prod__fill_addr(fill_ring, prod_idx + i) = addrs[0][i];
+    *xsk_ring_prod__fill_addr(fill_ring, prod_idx + i) = addrs[i];
   }
   xsk_ring_prod__submit(fill_ring, NUM_FRAMES);
   free(addrs);
   return ERROR_JUMP_NO_ERROR;
 }
 
+
+static inline void packet_loop(struct xsk_socket * xsk, struct xsk_ring_cons *rx_ring,  struct xsk_ring_prod *tx_ring, struct xsk_ring_prod *fill_ring, struct xsk_ring_cons *comp_ring) {
+  struct pollfd fds = { .fd = xsk_socket__fd(xsk), .events = POLLIN };
+
+  uint32_t rx_idx = 0;
+  uint32_t rx_num_available = 0;
+  const struct xdp_desc *desc = nullptr;
+  struct xdp_desc *tx_desc = nullptr;
+  const uint8_t *pkt = nullptr;
+  uint32_t fill_idx;
+
+  // RX cycle: 
+  // Process -[MEM]-> Fill_Ring
+  // Fill_Ring -> Kernel -[PACKET]-> Rx_Ring
+  while (atomic_load(&run)) {
+    int ret = poll(&fds, 1, 1000);
+    if (ret < 0 && errno != EINTR) {
+      LOG_ERROR("Failed to poll: %s\n", strerror(errno));
+      break;
+    }
+
+    rx_num_available = xsk_ring_cons__peek(rx_ring, RING_SIZE, &rx_idx);
+    if (rx_num_available == 0) {
+      continue;
+    }
+
+    for (uint32_t i = 0; i < rx_num_available; i++) {
+      desc = xsk_ring_cons__rx_desc(rx_ring, rx_idx + i);
+      pkt = xsk_umem__get_data(umem_area, desc->addr);
+      handle_packet(pkt, desc->len);
+
+      uint32_t tx_idx;
+      if (xsk_ring_prod__reserve(tx_ring, 1, &tx_idx) == 1) {
+        struct xdp_desc *tx_desc = xsk_ring_prod__tx_desc(tx_ring, tx_idx);
+        tx_desc->addr = desc->addr;
+        tx_desc->len = desc->len;
+        xsk_ring_prod__submit(tx_ring, 1);
+      }
+      // Tx ring full
+      else if(xsk_ring_prod__reserve(fill_ring, 1, &fill_idx) == 1) {
+        *xsk_ring_prod__fill_addr(fill_ring, fill_idx) = desc->addr; // <- Move from Rx to Fill
+        xsk_ring_prod__submit(fill_ring, 1);
+      }
+      // BOTH Tx and Fill rings are full - drop
+      else {
+        LOG_ERROR("Both TX and Fill rings full, dropping packet\n");
+      }
+    }
+
+    xsk_ring_cons__release(rx_ring, rx_num_available);
+  }
+
+  uint32_t comp_idx;
+  const uint32_t comp_num_available = xsk_ring_cons__peek(comp_ring, RING_SIZE, &comp_idx);
+  for (uint32_t i = 0; comp_num_available != 0 && i < comp_num_available; i++) {
+    uint64_t addr = *xsk_ring_cons__comp_addr(comp_ring, comp_idx + i);
+    uint32_t fill_idx;
+    // Tx -> Fill
+    if (xsk_ring_prod__reserve(fill_ring, 1, &fill_idx) == 1) {
+      *xsk_ring_prod__fill_addr(fill_ring, fill_idx) = addr;
+      xsk_ring_prod__submit(fill_ring, 1);
+    }
+    else {
+      LOG_ERROR("Fill ring full, cannot recycle TX buffer\n");
+    }
+  }
+  xsk_ring_cons__release(comp_ring, comp_num_available);
+}
 
 int main(int argc, char *argv[argc]) {
   if (argc < 2) {
@@ -270,7 +431,6 @@ int main(int argc, char *argv[argc]) {
 
 
   enum ErrorJump errjump = xsk_configure_umem(&umem, &fill_ring, &comp_ring);
-
   ERROR_JUMP(errjump);
 
   struct xsk_ring_prod tx_ring;
@@ -278,17 +438,35 @@ int main(int argc, char *argv[argc]) {
   struct xsk_socket *xsk = nullptr;
 
   errjump = xsk_configure_socket(iface, umem, &xsk, &tx_ring, &rx_ring);
-
   ERROR_JUMP(errjump);
 
+  errjump = fill_ring_fill(&fill_ring);
+  ERROR_JUMP(errjump);
 
+  signal(SIGINT, handle_sigint);
+
+  packet_loop(xsk, &rx_ring, &tx_ring, &fill_ring, &comp_ring);
+
+  //int xsks_map_fd = bpf_obj_get(XSKS_MAP_PIN_PATH);
+  //if (xsks_map_fd < 0) {
+  //  LOG_ERROR("Failed to get xsks_map fd: %s\n", strerror(errno));
+  //  goto cleanup;
+  //}
+  //LOG_PRINT("xsks_map_fd: %i\n", xsks_map_fd);
 
 cleanup:
 
 socket_cleanup:
-  xsk_socket__delete(xsk);
+  if (xsk != nullptr) {
+    xsk_socket__delete(xsk);
+    LOG_PRINT("Deleted XSK\n");
+  }
 
 umem_cleanup:
+  xsk_umem__delete(umem);
+  LOG_PRINT("Deleted umem\n");
+
+umem_area_cleanup:
     munmap(umem_area, UMEM_SIZE);
     LOG_PRINT("Deallocated umem_area\n");
 

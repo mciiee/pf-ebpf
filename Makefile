@@ -1,7 +1,7 @@
 CC=clang
 CFLAGS=-std=c23 -O2 -g
 DFLAGS=-D_DEFAULT_SOURCE
-LFLAGS=-lxdp -lbpf
+LFLAGS=-lxdp -lbpf -lm
 TARGET_BPF=-target bpf
 
 PF_FLAGS=-DDEBUG

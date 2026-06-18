@@ -15,13 +15,9 @@
 #include "protocols.h"
 
 #define ETHERNET_ETHERTYPE_OFFSET 12
-
 #define ETHERNET_ETHERTYPE_OFFSET_VLAN 16
-
 #define ETHERNET_HEADER_SIZE 14
-
 #define IPV6_NEXT_HEADER_OFFSET 6
-
 #define IPV4_PROTOCOL_OFFSET 9
 
 // L3 by TCP/IP. L4 by OSI
@@ -29,104 +25,61 @@
 [[unsequenced]]
 
 static inline char *getL3ProtocolName(enum L3Protocol proto) {
-
   // bpf_printk("[DEBUG] proto: 0x%02x", proto);
-
   switch (proto) {
-
-  case PROTOCOL_ICMP:
-
-    return "ICMPv4";
-
-  case PROTOCOL_IGMP:
-
-    return "IGMP";
-
-  case PROCOTOL_TCP:
-
-    return "TCP";
-
-  case PROTOCOL_UDP:
-
-    return "UDP";
-
-  case PROTOCOL_OSPF:
-
-    return "OSPF";
-
-  case PROTOCOL_SCTP:
-
-    return "SCTP";
-
-  case PROTOCOL_ICMPv6:
-
-    return "ICMPv6";
-
-  default:
-
-    return "UNKNOWN";
+    case PROTOCOL_ICMP:
+      return "ICMPv4";
+    case PROTOCOL_IGMP:
+      return "IGMP";
+    case PROCOTOL_TCP:
+      return "TCP";
+    case PROTOCOL_UDP:
+      return "UDP";
+    case PROTOCOL_OSPF:
+      return "OSPF";
+    case PROTOCOL_SCTP:
+      return "SCTP";
+    case PROTOCOL_ICMPv6:
+      return "ICMPv6";
+    default:
+      return "UNKNOWN";
   }
 }
 
 // L2 by TCP/IP. L3 by OSI
 
 [[unsequenced]]
-
 static inline char *getL2ProtocolName(enum L2Protocol proto) {
-
   switch (proto) {
-
-    // case PROTOCOL_UNKNOWN:
-
-  case PROTOCOL_IPV4:
-
-    return "IPv4";
-
-  case PROTOCOL_IPV6:
-
-    return "IPv6";
-
-  case PROTOCOL_ARP:
-
-    return "ARP";
-
-  default:
-
-    return "UNKNOWN";
+    case PROTOCOL_IPV4:
+      return "IPv4";
+    case PROTOCOL_IPV6:
+      return "IPv6";
+    case PROTOCOL_ARP:
+      return "ARP";
+    default:
+      return "UNKNOWN";
   }
 }
 
 static int inline parseIPv6(const struct xdp_md *ctx) {
-
-  if (ctx->data +
-          (ETHERNET_HEADER_SIZE + IPV6_NEXT_HEADER_OFFSET) * sizeof(u8) >=
-      ctx->data_end) {
-
+  if (ctx->data + (ETHERNET_HEADER_SIZE + IPV6_NEXT_HEADER_OFFSET) * sizeof(u8) >= ctx->data_end) {
     return PROTOCOL_UNKNOWN;
   }
 
-  enum L3Protocol proto =
-      ((u8 *)(long)ctx->data)[ETHERNET_HEADER_SIZE + IPV6_NEXT_HEADER_OFFSET];
-
+  enum L3Protocol proto = ((u8 *)(long)ctx->data)[ETHERNET_HEADER_SIZE + IPV6_NEXT_HEADER_OFFSET];
   return proto;
 }
 
 static int inline parseIPv4(const struct xdp_md *ctx) {
-
-  if (ctx->data + (ETHERNET_HEADER_SIZE + IPV4_PROTOCOL_OFFSET) * sizeof(u8) >=
-      ctx->data_end) {
-
+  if (ctx->data + (ETHERNET_HEADER_SIZE + IPV4_PROTOCOL_OFFSET) * sizeof(u8) >= ctx->data_end) {
     return PROTOCOL_UNKNOWN;
   }
-
-  enum L3Protocol proto =
-      ((u8 *)(long)ctx->data)[ETHERNET_HEADER_SIZE + IPV4_PROTOCOL_OFFSET];
-
+  enum L3Protocol proto = ((u8 *)(long)ctx->data)[ETHERNET_HEADER_SIZE + IPV4_PROTOCOL_OFFSET];
   return proto;
 }
 
 static inline u16 u16Byteswap(const u16 num) {
-
   return (*(u8 *)&num) * (1 << 8) + *((u8 *)&num + 1);
 }
 
