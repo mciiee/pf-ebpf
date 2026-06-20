@@ -83,6 +83,7 @@
       break; \
   } \
 
+constexpr size_t UINT8_SIZE = 256;
 //static const __u32 RING_SIZE = 4096;
 constexpr __u32 RING_SIZE = 4096;
 
@@ -150,12 +151,13 @@ static int inline parseIPv4(const uint8_t *packet, uint32_t len) {
 }
 
 static double calculate_entropy(const uint8_t *packet, const uint32_t len) {
-  uint32_t charmap[256] = {0};
+
+  uint32_t charmap[UINT8_SIZE] = {0};
   double res = 0;
   for (uint32_t i = 0; i < len; i++) {
     charmap[packet[i]]++;
   }
-  for (uint32_t i = 0; i < len; i++) {
+  for (uint32_t i = 0; i < sizeof(charmap)/sizeof(charmap[0]); i++) {
     if (charmap[i] == 0) {
       continue;
     }
@@ -439,9 +441,6 @@ int main(int argc, char *argv[argc]) {
   }
 
 
-
-
-  
   struct xdp_program *prog = nullptr;
   err = load_bpf_prog(netif_id, &prog);
 
