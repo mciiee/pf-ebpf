@@ -6,7 +6,12 @@
 #include <stdatomic.h>
 #include <stdint.h>
 
-#define ETHERNET_PROTOCOL_OFFSET 12
+#define ETHERNET_ETHERTYPE_OFFSET 12
+#define VLAN_HEADER_SIZE 4
+#define ETHERNET_HEADER_SIZE 14
+
+#define IPV6_NEXT_HEADER_OFFSET 6
+#define IPV4_PROTOCOL_OFFSET 9
 
 typedef __u8 u8;
 typedef __u16 u16;
@@ -59,4 +64,12 @@ struct Packet {
   uint8_t payload[];
 };
 
+// inline char *getL2ProtocolName(enum L2Protocol proto);
+// inline char *getL3ProtocolName(enum L3Protocol proto);
+//
+//
+// inline int parseIPv4(const uint8_t *packet, uint32_t len, struct Packet *pkt);
+// inline int parseIPv6(const uint8_t *packet, uint32_t len, struct Packet *pkt);
+
+void *parse_protocols(void *args);
 #endif

@@ -68,11 +68,6 @@
 #define SET_RING_PRODUCER(name) __u32 * name##_ring_producer = (__u32 *)( (char *) name##_ring_mmap + offsets. name .producer )
 
 
-#define ETHERNET_ETHERTYPE_OFFSET 12
-#define ETHERNET_ETHERTYPE_OFFSET_VLAN 16
-#define ETHERNET_HEADER_SIZE 14
-#define IPV6_NEXT_HEADER_OFFSET 6
-#define IPV4_PROTOCOL_OFFSET 9
 
 #define ERROR_JUMP(errjump) \
   switch (errjump) { \
@@ -100,40 +95,6 @@ static atomic_bool run = true;
 static pthread_t threads[THREAD_COUNT];
 
 
-static inline char *getL3ProtocolName(enum L3Protocol proto) {
-  // bpf_printk("[DEBUG] proto: 0x%02x", proto);
-  switch (proto) {
-    case PROTOCOL_ICMP:
-      return "ICMPv4";
-    case PROTOCOL_IGMP:
-      return "IGMP";
-    case PROCOTOL_TCP:
-      return "TCP";
-    case PROTOCOL_UDP:
-      return "UDP";
-    case PROTOCOL_OSPF:
-      return "OSPF";
-    case PROTOCOL_SCTP:
-      return "SCTP";
-    case PROTOCOL_ICMPv6:
-      return "ICMPv6";
-    default:
-      return "UNKNOWN";
-  }
-}
-
-static inline char *getL2ProtocolName(enum L2Protocol proto) {
-  switch (proto) {
-    case PROTOCOL_IPV4:
-      return "IPv4";
-    case PROTOCOL_IPV6:
-      return "IPv6";
-    case PROTOCOL_ARP:
-      return "ARP";
-    default:
-      return "UNKNOWN";
-  }
-}
 
 static inline int remove_memlimit(void) {
   struct rlimit r = {
@@ -147,15 +108,6 @@ static inline int remove_memlimit(void) {
   return EXIT_SUCCESS;
 }
 
-static int inline parseIPv6(const uint8_t *packet, uint32_t len) {
-  enum L3Protocol proto = packet[ETHERNET_HEADER_SIZE + IPV6_NEXT_HEADER_OFFSET];
-  return proto;
-}
-
-static int inline parseIPv4(const uint8_t *packet, uint32_t len) {
-  enum L3Protocol proto = packet[ETHERNET_HEADER_SIZE + IPV4_PROTOCOL_OFFSET];
-  return proto;
-}
 
 
 static void *calculate_entropy(void *arg) {
@@ -182,40 +134,9 @@ static void *calculate_entropy(void *arg) {
   return ret;
 }
 
-void *parse_protocols(void *args) {
-  const XDPPacketWrapper *data = args;
-  struct Packet *packet = malloc(sizeof(*packet));
-
-  packet->type = ntohs(*(uint16_t *)(data->packet + ETHERNET_PROTOCOL_OFFSET));
-  //LOG_PRINT("LL Protocol: 0x%04X\n", l2proto);
-  switch (packet->type) {
-    case PROTOCOL_UNKNOWN:
-      LOG_PRINT("Protocol: UNKNOWN\n");
-      break;
-    case PROTOCOL_IPV4:
-      packet->proto = parseIPv4(data->packet, data->length);
-      LOG_PRINT("Protocol: 0x%02x/0x%04x (%s/IPv4)\n", packet->proto, packet->type, getL3ProtocolName(packet->proto));
-      break;
-    case PROTOCOL_IPV6:
-      packet->proto = parseIPv6(data->packet, data->length);
-      LOG_PRINT("Protocol: 0x%02x/0x%04x (%s/IPv6)\n", packet->proto, packet->type, getL3ProtocolName(packet->proto));
-      break;
-    case PROTOCOL_ARP:
-      LOG_PRINT("Protocol: 0x0806 (ARP)\n");
-      break;
-    case VLAN_TAG:
-      //l2proto = ntohs(*(uint16_t *)(packet + ETHERNET_ETHERTYPE_OFFSET_VLAN));
-      LOG_PRINT("Protocol: [UNKNOWN/VLAN]\n");
-      break;
-    default:
-      LOG_PRINT("Protocol: 0x%04x (UNKNOWN)", packet->type);
-      break;
-  }
-
-  return packet;
-}
 
 static void handle_packet(pthread_t *threads, size_t thread_count, const uint8_t *packet, uint32_t len) {
+  // TODO: Use a memory pool for this
   XDPPacketWrapper *data = malloc(sizeof(*data));
   data->packet = packet;
   data->length = len;

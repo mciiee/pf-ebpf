@@ -13,8 +13,18 @@ PF_FLAGS=-DDEBUG
 all: build/pf-userspace build/pf.bpf.o
 
 
-build/pf-userspace: src/pf-userspace.c
-	$(CC) $(CFLAGS) $(DFLAGS) $(LFLAGS) $< -o $@
+
+
+build/pf-userspace: src/pf-userspace.o build/protocols.o
+	$(CC) $(LFLAGS) $^ -o $@
+
+
+build/protocols.o: src/protocols.c src/protocols.h
+	$(CC) $(CFLAGS) -c $< -o $@
+
+build/pf-userspace.o: src/pf-userspace.c
+	$(CC) $(CFLAGS) $(DFLAGS) -c $< -o $@
+
 
 build/pf.bpf.o: src/pf.c
 	$(CC) -c $(CFLAGS) $(PF_FLAGS) $(TARGET_BPF) $< -o $@
