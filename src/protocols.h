@@ -10,8 +10,12 @@
 #define VLAN_HEADER_SIZE 4
 #define ETHERNET_HEADER_SIZE 14
 
-#define IPV6_NEXT_HEADER_OFFSET 6
 #define IPV4_PROTOCOL_OFFSET 9
+#define IPV4_SRC_ADDRESS_OFFSET 12
+#define IPV4_DST_ADDRESS_OFFSET 16
+
+
+#define IPV6_NEXT_HEADER_OFFSET 6
 
 typedef __u8 u8;
 typedef __u16 u16;
@@ -33,6 +37,7 @@ enum L2Protocol: u16 {
   PROTOCOL_IPV6 = 0x86dd,
   PROTOCOL_ARP = 0x0806,
   VLAN_TAG = 0x8100, 
+  DOUBLE_VLAN_TAG = 0x88a8
 };
 
 struct ArpPacket {
