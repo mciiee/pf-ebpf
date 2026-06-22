@@ -18,13 +18,18 @@
 #include <poll.h>
 #include <sys/resource.h>
 #include <arpa/inet.h>
+#include <pthread.h>
 
 #include <linux/if_link.h>
 
 #include "log.h"
 #include "protocols.h"
 #include "ErrorJump.h"
+#include "EntropyDataWrapper.h"
 
+
+
+#define THREAD_COUNT 2
 
 #define DEFAULT_ERROR_MESSAGE_BUFFER_SIZE 1024
 
@@ -86,11 +91,13 @@
 constexpr size_t UINT8_SIZE = 256;
 //static const __u32 RING_SIZE = 4096;
 constexpr __u32 RING_SIZE = 4096;
+constexpr size_t ENTROPY_THREAD_ID = 1;
 
 //struct xsk_socket *xsk;
 static void *umem_area = NULL;
 static int sockfd = 0;
 static atomic_bool run = true;
+static pthread_t threads[THREAD_COUNT];
 
 
 static inline char *getL3ProtocolName(enum L3Protocol proto) {
@@ -150,7 +157,14 @@ static int inline parseIPv4(const uint8_t *packet, uint32_t len) {
   return proto;
 }
 
-static double calculate_entropy(const uint8_t *packet, const uint32_t len) {
+
+static void *calculate_entropy(void *arg) {
+  //LOG_PRINT("Entropy enter\n");
+  const XDPPacketWrapper *data = arg;
+  const uint8_t *packet = data->packet;
+  const uint32_t len = data->length;
+
+  double *ret = malloc(sizeof(double));
 
   uint32_t charmap[UINT8_SIZE] = {0};
   double res = 0;
@@ -163,24 +177,28 @@ static double calculate_entropy(const uint8_t *packet, const uint32_t len) {
     }
     res += ((double)charmap[i])/len  * (log2(len) - log2(charmap[i]));
   }
-  return res;
+  //LOG_PRINT("Entropy exit\n");
+  *ret = res;
+  return ret;
 }
 
-static void handle_packet(const uint8_t *packet, uint32_t len) {
-  enum L2Protocol l2proto = ntohs(*(uint16_t *)(packet + ETHERNET_PROTOCOL_OFFSET));
-  enum L3Protocol l3proto = 0;
+void *parse_protocols(void *args) {
+  const XDPPacketWrapper *data = args;
+  struct Packet *packet = malloc(sizeof(*packet));
+
+  packet->type = ntohs(*(uint16_t *)(data->packet + ETHERNET_PROTOCOL_OFFSET));
   //LOG_PRINT("LL Protocol: 0x%04X\n", l2proto);
-  switch (l2proto) {
+  switch (packet->type) {
     case PROTOCOL_UNKNOWN:
       LOG_PRINT("Protocol: UNKNOWN\n");
       break;
     case PROTOCOL_IPV4:
-      l3proto = parseIPv4(packet, len);
-      LOG_PRINT("Protocol: 0x%02x/0x%04x (%s/IPv4)\n", l3proto, l2proto, getL3ProtocolName(l3proto));
+      packet->proto = parseIPv4(data->packet, data->length);
+      LOG_PRINT("Protocol: 0x%02x/0x%04x (%s/IPv4)\n", packet->proto, packet->type, getL3ProtocolName(packet->proto));
       break;
     case PROTOCOL_IPV6:
-      l3proto = parseIPv6(packet, len);
-      LOG_PRINT("Protocol: 0x%02x/0x%04x (%s/IPv6)\n", l3proto, l2proto, getL3ProtocolName(l3proto));
+      packet->proto = parseIPv6(data->packet, data->length);
+      LOG_PRINT("Protocol: 0x%02x/0x%04x (%s/IPv6)\n", packet->proto, packet->type, getL3ProtocolName(packet->proto));
       break;
     case PROTOCOL_ARP:
       LOG_PRINT("Protocol: 0x0806 (ARP)\n");
@@ -190,10 +208,31 @@ static void handle_packet(const uint8_t *packet, uint32_t len) {
       LOG_PRINT("Protocol: [UNKNOWN/VLAN]\n");
       break;
     default:
-      LOG_PRINT("Protocol: 0x%04x (UNKNOWN)", l2proto);
+      LOG_PRINT("Protocol: 0x%04x (UNKNOWN)", packet->type);
       break;
   }
-  LOG_PRINT("Entropy: %f\n", calculate_entropy(packet, len));
+
+  return packet;
+}
+
+static void handle_packet(pthread_t *threads, size_t thread_count, const uint8_t *packet, uint32_t len) {
+  XDPPacketWrapper *data = malloc(sizeof(*data));
+  data->packet = packet;
+  data->length = len;
+  pthread_create(&threads[ENTROPY_THREAD_ID], nullptr, calculate_entropy, data);
+  pthread_create(&threads[0], nullptr, parse_protocols, data);
+  
+
+  double* entropy;
+  struct Packet *pkt;
+
+
+  pthread_join(threads[ENTROPY_THREAD_ID], (void**)&entropy);
+  pthread_join(threads[0], (void**)&pkt);
+  LOG_PRINT("Entropy: %f\n", *entropy);
+  free(data);
+  free(pkt);
+  free(entropy);
 }
 
 static void handle_sigint(int sig) {
@@ -334,7 +373,7 @@ void send_to_analyzer(unsigned int analyzer_if_id, int ansockfd, size_t payload_
   write(ansockfd, payload, payload_size);
 }
 
-static inline void packet_loop(struct xsk_socket * xsk, struct xsk_ring_cons *rx_ring,  struct xsk_ring_prod *tx_ring, struct xsk_ring_prod *fill_ring, struct xsk_ring_cons *comp_ring) {
+static inline void packet_loop(pthread_t *threads, size_t thread_count, struct xsk_socket * xsk, struct xsk_ring_cons *rx_ring,  struct xsk_ring_prod *tx_ring, struct xsk_ring_prod *fill_ring, struct xsk_ring_cons *comp_ring) {
   struct pollfd fds = { .fd = xsk_socket__fd(xsk), .events = POLLIN };
 
   uint32_t rx_idx = 0;
@@ -362,7 +401,7 @@ static inline void packet_loop(struct xsk_socket * xsk, struct xsk_ring_cons *rx
     for (uint32_t i = 0; i < rx_num_available; i++) {
       desc = xsk_ring_cons__rx_desc(rx_ring, rx_idx + i);
       pkt = xsk_umem__get_data(umem_area, desc->addr);
-      handle_packet(pkt, desc->len);
+      handle_packet(threads, THREAD_COUNT, pkt, desc->len);
 
       uint32_t tx_idx;
       if (xsk_ring_prod__reserve(tx_ring, 1, &tx_idx) == 1) {
@@ -412,6 +451,7 @@ int main(int argc, char *argv[argc]) {
     LOG_ERROR("Usage: %s [READ INTERFACE] [ANALYZER INTERFACE]", argv[0]);
     return EXIT_FAILURE;
   }
+
 
   const char *iface = argv[1];
   const char *analyzer_ifname = argv[1];
@@ -468,9 +508,13 @@ int main(int argc, char *argv[argc]) {
   errjump = fill_ring_fill(&fill_ring);
   ERROR_JUMP(errjump);
 
+  //pthread_t entropy_thread;
+  //
+  //pthread_create(entropy_thread, nullptr, entrop);
+
   signal(SIGINT, handle_sigint);
 
-  packet_loop(xsk, &rx_ring, &tx_ring, &fill_ring, &comp_ring);
+  packet_loop(threads, THREAD_COUNT, xsk, &rx_ring, &tx_ring, &fill_ring, &comp_ring);
 
   //int xsks_map_fd = bpf_obj_get(XSKS_MAP_PIN_PATH);
   //if (xsks_map_fd < 0) {
