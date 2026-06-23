@@ -17,6 +17,15 @@
 
 #define IPV6_NEXT_HEADER_OFFSET 6
 
+
+#define UDP_HEADER_SIZE 8
+#define UDP_SRC_PORT_OFFSET 0
+#define UDP_DST_PORT_OFFSET 2
+
+
+#define TCP_SRC_PORT_OFFSET 0
+#define TCP_DST_PORT_OFFSET 2
+
 typedef __u8 u8;
 typedef __u16 u16;
 
