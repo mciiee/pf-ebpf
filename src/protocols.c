@@ -5,6 +5,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 
 #include "EntropyDataWrapper.h"
@@ -48,10 +49,6 @@ static inline char *getL2ProtocolName(enum L2Protocol proto) {
   }
 }
 
-static inline int parseIPv6(const uint8_t *packet, uint32_t len, uint32_t offset, struct Packet *pkt) {
-  enum L3Protocol proto = packet[offset + IPV6_NEXT_HEADER_OFFSET];
-  return proto;
-}
 
 static inline int parseUDP(const uint8_t *packet, uint32_t len, uint32_t offset, struct Packet *pkt) {
   if(offset + UDP_HEADER_SIZE > len) {
@@ -87,15 +84,21 @@ static inline uint32_t parseIPv4(const uint8_t *packet, uint32_t len, uint32_t o
   uint8_t header_length = packet[offset] & 0b00001111;
   //LOG_PRINT("HL: %u\n", header_length);
 
-  pkt->addrs.ipv4.src_ip = *(uint32_t *)(packet + offset + IPV4_SRC_ADDRESS_OFFSET);
-  pkt->addrs.ipv4.dst_ip = *(uint32_t *)(packet + offset + IPV4_DST_ADDRESS_OFFSET);
+  pkt->addrs.ipv4.src_ip = *(uint32_t *)(packet + offset + IPv4_SRC_ADDRESS_OFFSET);
+  pkt->addrs.ipv4.dst_ip = *(uint32_t *)(packet + offset + IPv4_DST_ADDRESS_OFFSET);
 
-  pkt->proto = packet[offset + IPV4_PROTOCOL_OFFSET];
+  pkt->proto = packet[offset + IPv4_PROTOCOL_OFFSET];
   
-
-  return header_length;
+  return header_length * 5;
 }
 
+static inline int parseIPv6(const uint8_t *packet, uint32_t len, uint32_t offset, struct Packet *pkt) {
+  pkt->proto = packet[offset + IPv6_NEXT_HEADER_OFFSET];
+  memcpy(&pkt->addrs.ipv6.src_ip, packet + offset + IPv6_SRC_ADDRESS_OFFSET, sizeof(pkt->addrs.ipv6.src_ip));
+  memcpy(&pkt->addrs.ipv6.dst_ip, packet + offset + IPv6_DST_ADDRESS_OFFSET, sizeof(pkt->addrs.ipv6.dst_ip));
+
+  return IPv6_HEADER_SIZE;
+}
 
 // Assumption: [len] > [ETHERNET_ETHERTYPE_OFFSET]
 static uint32_t findVlanOffset(const uint8_t *packet, uint32_t len) {
@@ -122,9 +125,29 @@ static inline int handleIPv4(const XDPPacketWrapper *data, uint32_t vlan_offset,
   inet_ntop(AF_INET, &packet->addrs.ipv4.dst_ip, dst_buffer, sizeof(dst_buffer) - 1);
 
   if (err == 0) {
-    LOG_PRINT("Protocol: 0x%02x/0x%04x (%s/IPv4): %s:%u -> %s:%u\n", packet->proto, packet->type, getL3ProtocolName(packet->proto), src_buffer, ntohs(packet->src_port), dst_buffer, htons(packet->dst_port));
+    LOG_PRINT("Protocol: 0x%02x/0x%04x (%s/IPv4): %s:%u -> %s:%u\n", packet->proto, packet->type, getL3ProtocolName(packet->proto), src_buffer, packet->src_port, dst_buffer, packet->dst_port);
   } else {
     LOG_PRINT("Protocol: 0x%02x/0x%04x (%s/IPv4): %s -> %s\n", packet->proto, packet->type, getL3ProtocolName(packet->proto), src_buffer, dst_buffer);
+  }
+
+  return err;
+}
+
+
+static inline int handleIPv6(const XDPPacketWrapper *data, uint32_t vlan_offset, struct Packet *packet) {
+  uint32_t offset = parseIPv6(data->packet, data->length - vlan_offset - ETHERNET_HEADER_SIZE, vlan_offset + ETHERNET_HEADER_SIZE, packet);
+  int err = parseL3Proto(data->packet, data->length, offset, packet);
+
+  char src_buffer[INET6_ADDRSTRLEN + 1];
+  char dst_buffer[INET6_ADDRSTRLEN + 1];
+  
+  inet_ntop(AF_INET6, &packet->addrs.ipv6.src_ip, src_buffer, sizeof(src_buffer) - 1);
+  inet_ntop(AF_INET6, &packet->addrs.ipv6.dst_ip, dst_buffer, sizeof(dst_buffer) - 1);
+
+  if (err == 0) {
+    LOG_PRINT("Protocol: 0x%02x/0x%04x (%s/IPv6): %s:%u -> %s:%u\n", packet->proto, packet->type, getL3ProtocolName(packet->proto), src_buffer, packet->src_port, dst_buffer, packet->dst_port);
+  } else {
+    LOG_PRINT("Protocol: 0x%02x/0x%04x (%s/IPv6): %s -> %s\n", packet->proto, packet->type, getL3ProtocolName(packet->proto), src_buffer, dst_buffer);
   }
 
   return err;
@@ -150,8 +173,9 @@ void *parse_protocols(void *args) {
       handleIPv4(data, vlan_offset, packet);
       break;
     case PROTOCOL_IPV6:
-      packet->proto = parseIPv6(data->packet, data->length - vlan_offset - ETHERNET_HEADER_SIZE, vlan_offset + ETHERNET_HEADER_SIZE, packet);
-      LOG_PRINT("Protocol: 0x%02x/0x%04x (%s/IPv6)\n", packet->proto, packet->type, getL3ProtocolName(packet->proto));
+      //packet->proto = parseIPv6(data->packet, data->length - vlan_offset - ETHERNET_HEADER_SIZE, vlan_offset + ETHERNET_HEADER_SIZE, packet);
+      //LOG_PRINT("Protocol: 0x%02x/0x%04x (%s/IPv6)\n", packet->proto, packet->type, getL3ProtocolName(packet->proto));
+      handleIPv6(data, vlan_offset, packet);
       break;
     case PROTOCOL_ARP:
       LOG_PRINT("Protocol: 0x0806 (ARP)\n");

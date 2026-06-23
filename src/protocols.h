@@ -10,12 +10,16 @@
 #define VLAN_HEADER_SIZE 4
 #define ETHERNET_HEADER_SIZE 14
 
-#define IPV4_PROTOCOL_OFFSET 9
-#define IPV4_SRC_ADDRESS_OFFSET 12
-#define IPV4_DST_ADDRESS_OFFSET 16
+constexpr uint8_t IPv4_PROTOCOL_OFFSET = 9;
+constexpr uint8_t IPv4_SRC_ADDRESS_OFFSET = 12;
+constexpr uint8_t IPv4_DST_ADDRESS_OFFSET = 16;
 
 
-#define IPV6_NEXT_HEADER_OFFSET 6
+constexpr uint32_t IPv6_HEADER_SIZE = 40;
+constexpr uint16_t IPv6_NEXT_HEADER_OFFSET = 6;
+constexpr uint8_t IPv6_SRC_ADDRESS_OFFSET = 8;
+constexpr uint8_t IPv6_DST_ADDRESS_OFFSET = 24;
+
 
 
 #define UDP_HEADER_SIZE 8
