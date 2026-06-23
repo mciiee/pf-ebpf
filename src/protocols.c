@@ -21,7 +21,7 @@ static inline char *getL3ProtocolName(enum L3Protocol proto) {
       return "ICMPv4";
     case PROTOCOL_IGMP:
       return "IGMP";
-    case PROCOTOL_TCP:
+    case PROTOCOL_TCP:
       return "TCP";
     case PROTOCOL_UDP:
       return "UDP";
@@ -71,7 +71,7 @@ static inline int parseTCP(const uint8_t *packet, uint32_t len, uint32_t offset,
 
 static int parseL3Proto(const uint8_t *packet, uint32_t len, uint32_t offset, struct Packet *pkt){
   switch (pkt->proto) {
-  case PROCOTOL_TCP:
+  case PROTOCOL_TCP:
     return parseTCP(packet, len, offset, pkt);
   case PROTOCOL_UDP:
     return parseUDP(packet, len, offset, pkt);
