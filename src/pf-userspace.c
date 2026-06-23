@@ -47,6 +47,10 @@
 #define FRAME_SIZE XSK_UMEM__DEFAULT_FRAME_SIZE
 #define UMEM_SIZE (NUM_FRAMES * FRAME_SIZE)
 
+#ifndef PACKET_BUFFER_SIZE
+#define PACKET_BUFFER_SIZE 1024 * 1024
+#endif
+
 #ifndef max
 #define max(a,b) a < b? a: b
 #endif
@@ -439,7 +443,7 @@ int main(int argc, char *argv[argc]) {
 
   signal(SIGINT, handle_sigint);
 
-  errjump = mempool_init(1);
+  errjump = mempool_init(PACKET_BUFFER_SIZE);
   ERROR_JUMP(errjump)
 
   packet_loop(threads, THREAD_COUNT, xsk, &rx_ring, &tx_ring, &fill_ring, &comp_ring);
