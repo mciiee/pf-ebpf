@@ -1,53 +1,69 @@
+#include "ErrorJump.h"
 #include "protocols.h"
 #include <stdatomic.h>
 #include <stddef.h>
+#include <stdint.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <unistd.h>
+#include <errno.h>
+#include <stdio.h>
 
-static void *mem;
-static size_t page_num;
+
+#include "log.h"
+
+static void *mem = nullptr;
+static size_t packet_capacity;
 static atomic_ptrdiff_t last_free = 0;
 
+//uint_fast8_t TRUE = false;
+//uint_fast8_t FALSE = false;
 
-void *mempool_init(size_t pagenum) {
-  
-  page_num = pagenum;
-  mem = mmap(nullptr, sysconf(_SC_PAGESIZE) * pagenum, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_HUGETLB, 0, 0);
+
+uint64_t mempool_init(size_t packet_num) {
+  packet_capacity = packet_num;
+  mem = mmap(nullptr, packet_num * sizeof(struct Packet), PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, 0, 0);
+
   if (mem == MAP_FAILED) {
-    return nullptr;
+    LOG_ERROR("Failed to allocate mempool: %s\n", strerror(errno));
+    return ERROR_JUMP_MEMPOOL_CLEANUP;
   }
-  memset(mem, 0, pagenum * sysconf(_SC_PAGESIZE));
 
-  return mem;
+  memset(mem, 0, packet_num * sizeof(struct Packet));
+
+  return ERROR_JUMP_NO_ERROR;
 }
 
-void mempool_deinit(void *mem) {
-  munmap(mem, page_num * sysconf(_SC_PAGESIZE));
+void mempool_deinit(void) {
+  if (mem == nullptr) {
+    return;
+  }
+  munmap(mem, packet_capacity * sizeof(struct Packet));
 }
 
-struct Packet *packet_alloc(size_t packet_num) {
+struct Packet *packet_alloc(void) {
   struct Packet *mempool = mem;
-  const int page_size = sysconf(_SC_PAGESIZE);
-  
-  for (size_t i = last_free; i * sizeof(struct Packet) < page_num * page_size; i++) {
-    if (atomic_load(&mempool[i].free)) {
-      atomic_store(&mempool[i].free, false);
+  uint_fast8_t expected = false;
+  ptrdiff_t lf = atomic_load(&last_free);
+
+  for (size_t i = lf; i < packet_capacity; i++) {
+    if (atomic_compare_exchange_strong(&mempool[i].used, &expected, false)) {
       return &mempool[i];
     }
+    expected = false;
   }
 
-  for (size_t i = 0; i < last_free ; i++) {
-    if (atomic_load(&mempool[i].free)) {
-      atomic_store(&mempool[i].free, false);
+  for (size_t i = 0; i < lf; i++) {
+    if (atomic_compare_exchange_strong(&mempool[i].used, &expected, false)) {
       return &mempool[i];
     }
+    expected = false;
   }
 
   return nullptr;
 }
 
 void packet_dealloc(struct Packet *packet) {
-  atomic_store(&packet->free, true);
-  atomic_store(&last_free, (struct Packet*)mem - packet);
+  atomic_store(&packet->used, false);
+  atomic_store(&last_free,  packet - (struct Packet*)mem);
 }

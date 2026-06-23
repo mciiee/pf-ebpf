@@ -26,6 +26,7 @@
 #include "protocols.h"
 #include "ErrorJump.h"
 #include "EntropyDataWrapper.h"
+#include "mempool.h"
 
 
 
@@ -79,6 +80,8 @@
       goto socket_cleanup; \
     case ERROR_JUMP_ADDRS_CLEANUP: \
       goto cleanup; \
+    case ERROR_JUMP_MEMPOOL_CLEANUP: \
+      goto mempool_cleanup; \
     case ERROR_JUMP_NO_ERROR: \
       break; \
   } \
@@ -152,7 +155,6 @@ static void handle_packet(pthread_t *threads, size_t thread_count, const uint8_t
   pthread_join(threads[0], (void**)&pkt);
   LOG_PRINT("Entropy: %f\n", *entropy);
   free(data);
-  free(pkt);
   free(entropy);
 }
 
@@ -362,6 +364,8 @@ static inline void packet_loop(pthread_t *threads, size_t thread_count, struct x
   xsk_ring_cons__release(comp_ring, comp_num_available);
 }
 
+
+// TODO: Finish analyzer comms
 static int analyzer_socket_init() {
   int ansockfd = socket(AF_INET, SOCK_DGRAM, 0);
   return ansockfd;
@@ -435,6 +439,9 @@ int main(int argc, char *argv[argc]) {
 
   signal(SIGINT, handle_sigint);
 
+  errjump = mempool_init(1);
+  ERROR_JUMP(errjump)
+
   packet_loop(threads, THREAD_COUNT, xsk, &rx_ring, &tx_ring, &fill_ring, &comp_ring);
 
   //int xsks_map_fd = bpf_obj_get(XSKS_MAP_PIN_PATH);
@@ -445,6 +452,9 @@ int main(int argc, char *argv[argc]) {
   //LOG_PRINT("xsks_map_fd: %i\n", xsks_map_fd);
 
 cleanup:
+
+mempool_cleanup:
+  mempool_deinit();
 
 socket_cleanup:
   if (xsk != nullptr) {

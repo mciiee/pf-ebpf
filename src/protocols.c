@@ -11,6 +11,7 @@
 #include "EntropyDataWrapper.h"
 #include "log.h"
 #include "protocols.h"
+#include "mempool.h"
 
 
 
@@ -156,7 +157,7 @@ static inline int handleIPv6(const XDPPacketWrapper *data, uint32_t vlan_offset,
 void *parse_protocols(void *args) {
   int err = 0;
   const XDPPacketWrapper *data = args;
-  struct Packet *packet = malloc(sizeof(*packet));
+  struct Packet *packet = packet_alloc();
 
   uint32_t vlan_offset = findVlanOffset(data->packet, data->length);
   packet->type = ntohs(*(uint16_t *)(data->packet + vlan_offset + ETHERNET_ETHERTYPE_OFFSET));
@@ -164,7 +165,7 @@ void *parse_protocols(void *args) {
 
   if (vlan_offset + ETHERNET_HEADER_SIZE > data->length) {
     LOG_PRINT("vlan_offset(%u) + ETHERNET_HEADER_SIZE(%u) > data->length(%u)\n", vlan_offset, ETHERNET_HEADER_SIZE, data->length);
-    free(packet);
+    packet_dealloc(packet);
     return nullptr;
   }
   

@@ -1,11 +1,10 @@
 #include <stddef.h>
 
-[[nodiscard("Memory-mapped page")]]
-void *mempool_init(size_t pagenum);
-void mempool_deinit(void *mem);
+int mempool_init(size_t pagenum);
+void mempool_deinit(void);
 
 
 [[nodiscard("Leaking memory")]]
-struct Packet *packet_alloc(size_t packet_num);
+struct Packet *packet_alloc(void);
 void packet_dealloc(struct Packet *packet);
 
