@@ -73,7 +73,7 @@ union Addresses {
 };
 
 struct Packet {
-  atomic_bool free;
+  atomic_uint_fast8_t free;
   enum L3Protocol proto;
   enum L2Protocol type;
   union Addresses addrs;

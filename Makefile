@@ -15,9 +15,11 @@ all: build/pf-userspace build/pf.bpf.o
 
 
 
-build/pf-userspace: build/pf-userspace.o build/protocols.o
+build/pf-userspace: build/pf-userspace.o build/protocols.o build/mempool.o
 	$(CC) $(LFLAGS) $^ -o $@
 
+build/mempool.o: src/mempool.c src/mempool.h
+	$(CC) $(CFLAGS) -c $< -o $@
 
 build/protocols.o: src/protocols.c src/protocols.h
 	$(CC) $(CFLAGS) -c $< -o $@
