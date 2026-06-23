@@ -15,7 +15,7 @@ all: build/pf-userspace build/pf.bpf.o
 
 
 
-build/pf-userspace: src/pf-userspace.o build/protocols.o
+build/pf-userspace: build/pf-userspace.o build/protocols.o
 	$(CC) $(LFLAGS) $^ -o $@
 
 
