@@ -122,15 +122,19 @@ static uint32_t findVlanOffset(const uint8_t *packet, uint32_t len) {
 
 static inline int handleIPv4(const XDPPacketWrapper *data, uint32_t vlan_offset, struct Packet *packet) {
   uint32_t ip_offset = parseIPv4(data->packet, data->length - vlan_offset - ETHERNET_HEADER_SIZE, vlan_offset + ETHERNET_HEADER_SIZE, packet);
-
   assert(data->length > (vlan_offset + ETHERNET_HEADER_SIZE + ip_offset));
+
   int err = parseL3Proto(data->packet, data->length, vlan_offset + ETHERNET_HEADER_SIZE + ip_offset, packet);
+  const char *err_p = nullptr;
 
   char src_buffer[INET_ADDRSTRLEN + 1];
   char dst_buffer[INET_ADDRSTRLEN + 1];
   
-  inet_ntop(AF_INET, &packet->addrs.ipv4.src_ip, src_buffer, sizeof(src_buffer) - 1);
-  inet_ntop(AF_INET, &packet->addrs.ipv4.dst_ip, dst_buffer, sizeof(dst_buffer) - 1);
+
+  err_p = inet_ntop(AF_INET, &packet->addrs.ipv4.src_ip, src_buffer, sizeof(src_buffer) - 1);
+  assert(err_p != nullptr);
+  err_p = inet_ntop(AF_INET, &packet->addrs.ipv4.dst_ip, dst_buffer, sizeof(dst_buffer) - 1);
+  assert(err_p != nullptr);
 
   if (err == 0) {
     LOG_PRINT("Protocol: 0x%02x/0x%04x (%s/IPv4): %s:%u -> %s:%u\n", packet->proto, packet->type, getL3ProtocolName(packet->proto), src_buffer, packet->src_port, dst_buffer, packet->dst_port);
@@ -145,13 +149,17 @@ static inline int handleIPv4(const XDPPacketWrapper *data, uint32_t vlan_offset,
 static inline int handleIPv6(const XDPPacketWrapper *data, uint32_t vlan_offset, struct Packet *packet) {
   uint32_t offset = parseIPv6(data->packet, data->length - vlan_offset - ETHERNET_HEADER_SIZE, vlan_offset + ETHERNET_HEADER_SIZE, packet);
   int err = parseL3Proto(data->packet, data->length, offset, packet);
+  const char *err_p = nullptr;
 
   char src_buffer[INET6_ADDRSTRLEN + 1];
   char dst_buffer[INET6_ADDRSTRLEN + 1];
   
-  inet_ntop(AF_INET6, &packet->addrs.ipv6.src_ip, src_buffer, sizeof(src_buffer) - 1);
-  inet_ntop(AF_INET6, &packet->addrs.ipv6.dst_ip, dst_buffer, sizeof(dst_buffer) - 1);
+  err_p = inet_ntop(AF_INET6, &packet->addrs.ipv6.src_ip, src_buffer, sizeof(src_buffer) - 1);
+  assert(err_p != nullptr);
 
+  err_p = inet_ntop(AF_INET6, &packet->addrs.ipv6.dst_ip, dst_buffer, sizeof(dst_buffer) - 1);
+  assert(err_p != nullptr);
+  
   if (err == 0) {
     LOG_PRINT("Protocol: 0x%02x/0x%04x (%s/IPv6): %s:%u -> %s:%u\n", packet->proto, packet->type, getL3ProtocolName(packet->proto), src_buffer, packet->src_port, dst_buffer, packet->dst_port);
   } else {
