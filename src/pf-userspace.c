@@ -300,6 +300,8 @@ void send_to_analyzer(unsigned int analyzer_if_id, int ansockfd, size_t payload_
   write(ansockfd, payload, payload_size);
 }
 
+
+
 static inline void packet_loop(pthread_t *threads, size_t thread_count, struct xsk_socket * xsk, struct xsk_ring_cons *rx_ring,  struct xsk_ring_prod *tx_ring, struct xsk_ring_prod *fill_ring, struct xsk_ring_cons *comp_ring) {
   struct pollfd fds = { .fd = xsk_socket__fd(xsk), .events = POLLIN };
 

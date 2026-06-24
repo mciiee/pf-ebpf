@@ -1,4 +1,3 @@
-
 #include <arpa/inet.h>
 #include <assert.h>
 #include <netinet/in.h>
@@ -13,6 +12,15 @@
 #include "protocols.h"
 #include "mempool.h"
 
+static void dumpPacket(const uint8_t *packet, uint32_t len){
+  char buffer[len * 3 + 1];
+  buffer[len * 3] = '\0';
+
+  for (uint32_t i = 0; i < len; i++) {
+    snprintf(buffer + 3 * i, 4, "%02x ", packet[i]);
+  }
+  LOG_PRINT("Packet: %s\n", buffer);
+}
 
 
 static inline char *getL3ProtocolName(enum L3Protocol proto) {
@@ -52,21 +60,19 @@ static inline char *getL2ProtocolName(enum L2Protocol proto) {
 
 
 static inline int parseUDP(const uint8_t *packet, uint32_t len, uint32_t offset, struct Packet *pkt) {
-  if(offset + UDP_HEADER_SIZE > len) {
-    return -1;
-  }
-  pkt->src_port = *(uint16_t *)(packet + offset + UDP_SRC_PORT_OFFSET);
-  pkt->dst_port = *(uint16_t *)(packet + offset + UDP_DST_PORT_OFFSET);
+  assert (offset + UDP_HEADER_SIZE <= len);
+
+  pkt->src_port = htons(*(uint16_t *)(packet + offset + UDP_SRC_PORT_OFFSET));
+  pkt->dst_port = htons(*(uint16_t *)(packet + offset + UDP_DST_PORT_OFFSET));
   return 0;
 }
 
-static inline int parseTCP(const uint8_t *packet, uint32_t len, uint32_t offset, struct Packet *pkt) {
-  if(offset + TCP_SRC_PORT_OFFSET + TCP_DST_PORT_OFFSET + 1 > len) {
-    return -1;
-  }
+static inline int parseTCP(const uint8_t *packet, uint32_t len, volatile uint32_t offset, struct Packet *pkt) {
+  assert(offset + TCP_DST_PORT_OFFSET + 2 <= len);
 
-  pkt->src_port = *(uint16_t *)(packet + offset + TCP_SRC_PORT_OFFSET);
-  pkt->dst_port = *(uint16_t *)(packet + offset + TCP_DST_PORT_OFFSET);
+  pkt->src_port = htons(*(uint16_t *)(packet + offset + TCP_SRC_PORT_OFFSET));
+  pkt->dst_port = htons(*(uint16_t *)(packet + offset + TCP_DST_PORT_OFFSET));
+
   return 0;
 }
 
@@ -77,20 +83,19 @@ static int parseL3Proto(const uint8_t *packet, uint32_t len, uint32_t offset, st
   case PROTOCOL_UDP:
     return parseUDP(packet, len, offset, pkt);
   default:
-    return -1;
+    return -2;
   }
 }
 
 static inline uint32_t parseIPv4(const uint8_t *packet, uint32_t len, uint32_t offset, struct Packet *pkt) {
   uint8_t header_length = packet[offset] & 0b00001111;
-  //LOG_PRINT("HL: %u\n", header_length);
 
   pkt->addrs.ipv4.src_ip = *(uint32_t *)(packet + offset + IPv4_SRC_ADDRESS_OFFSET);
   pkt->addrs.ipv4.dst_ip = *(uint32_t *)(packet + offset + IPv4_DST_ADDRESS_OFFSET);
 
   pkt->proto = packet[offset + IPv4_PROTOCOL_OFFSET];
   
-  return header_length * 5;
+  return header_length * 4;
 }
 
 static inline int parseIPv6(const uint8_t *packet, uint32_t len, uint32_t offset, struct Packet *pkt) {
@@ -116,8 +121,10 @@ static uint32_t findVlanOffset(const uint8_t *packet, uint32_t len) {
 }
 
 static inline int handleIPv4(const XDPPacketWrapper *data, uint32_t vlan_offset, struct Packet *packet) {
-  uint32_t offset = parseIPv4(data->packet, data->length - vlan_offset - ETHERNET_HEADER_SIZE, vlan_offset + ETHERNET_HEADER_SIZE, packet);
-  int err = parseL3Proto(data->packet, data->length, offset, packet);
+  uint32_t ip_offset = parseIPv4(data->packet, data->length - vlan_offset - ETHERNET_HEADER_SIZE, vlan_offset + ETHERNET_HEADER_SIZE, packet);
+
+  assert(data->length > (vlan_offset + ETHERNET_HEADER_SIZE + ip_offset));
+  int err = parseL3Proto(data->packet, data->length, vlan_offset + ETHERNET_HEADER_SIZE + ip_offset, packet);
 
   char src_buffer[INET_ADDRSTRLEN + 1];
   char dst_buffer[INET_ADDRSTRLEN + 1];
@@ -174,8 +181,6 @@ void *parse_protocols(void *args) {
       handleIPv4(data, vlan_offset, packet);
       break;
     case PROTOCOL_IPV6:
-      //packet->proto = parseIPv6(data->packet, data->length - vlan_offset - ETHERNET_HEADER_SIZE, vlan_offset + ETHERNET_HEADER_SIZE, packet);
-      //LOG_PRINT("Protocol: 0x%02x/0x%04x (%s/IPv6)\n", packet->proto, packet->type, getL3ProtocolName(packet->proto));
       handleIPv6(data, vlan_offset, packet);
       break;
     case PROTOCOL_ARP:
