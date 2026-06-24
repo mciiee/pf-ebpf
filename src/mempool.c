@@ -41,6 +41,17 @@ void mempool_deinit(void) {
   munmap(mem, packet_capacity * sizeof(struct Packet));
 }
 
+void mempool_stats(void) {
+  const struct Packet *mempool = mem;
+  uint64_t packets_used;
+  for (ptrdiff_t i = 0; i < packet_capacity; i++) {
+    if (atomic_load(&mempool[i].used)) {
+      packets_used++;
+    }
+  }
+  printf("[MEMPOOL stats] last_free: %ld, used: %lu, free: %lu, total: %lu\n", last_free, packets_used, (uint64_t)(packet_capacity - packets_used), (uint64_t)packet_capacity);
+}
+
 struct Packet *packet_alloc(void) {
   struct Packet *mempool = mem;
   uint_fast8_t expected = false;
