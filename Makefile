@@ -12,8 +12,9 @@ PF_FLAGS=-DDEBUG
 
 all: build/pf-userspace build/pf.bpf.o
 
+bpf: build/pf.bpf.o
 
-
+userspace: build/pf-userspace
 
 build/pf-userspace: build/pf-userspace.o build/protocols.o build/mempool.o
 	$(CC) $(LFLAGS) $^ -o $@
