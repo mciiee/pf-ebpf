@@ -170,9 +170,14 @@ static inline int handleIPv6(const XDPPacketWrapper *data, uint32_t vlan_offset,
 }
 
 void *parse_protocols(void *args) {
+  struct Packet *packet = packet_alloc();
+  if (packet == nullptr) {
+    return nullptr;
+  }
+
   int err = 0;
   const XDPPacketWrapper *data = args;
-  struct Packet *packet = packet_alloc();
+
 
   uint32_t vlan_offset = findVlanOffset(data->packet, data->length);
   packet->type = ntohs(*(uint16_t *)(data->packet + vlan_offset + ETHERNET_ETHERTYPE_OFFSET));

@@ -157,9 +157,17 @@ static void handle_packet(pthread_t *threads, size_t thread_count, const uint8_t
 
   pthread_join(threads[ENTROPY_THREAD_ID], (void**)&entropy);
   pthread_join(threads[0], (void**)&pkt);
+
   LOG_PRINT("Entropy: %f\n", *entropy);
   free(data);
   free(entropy);
+
+  if (pkt == nullptr) {
+    LOG_ERROR("Failed to allocate a Packet struct\n");
+    return;
+  }
+
+  packet_dealloc(pkt);
 }
 
 static void handle_sigint(int sig) {
@@ -303,7 +311,10 @@ void send_to_analyzer(unsigned int analyzer_if_id, int ansockfd, size_t payload_
 
 
 static inline void packet_loop(pthread_t *threads, size_t thread_count, struct xsk_socket * xsk, struct xsk_ring_cons *rx_ring,  struct xsk_ring_prod *tx_ring, struct xsk_ring_prod *fill_ring, struct xsk_ring_cons *comp_ring) {
-  struct pollfd fds = { .fd = xsk_socket__fd(xsk), .events = POLLIN };
+  struct pollfd fds = { 
+    .fd = xsk_socket__fd(xsk), 
+    .events = POLLIN 
+  };
 
   uint32_t rx_idx = 0;
   uint32_t rx_num_available = 0;

@@ -43,7 +43,7 @@ void mempool_deinit(void) {
 
 void mempool_stats(void) {
   const struct Packet *mempool = mem;
-  uint64_t packets_used;
+  uint64_t packets_used = 0;
   for (ptrdiff_t i = 0; i < packet_capacity; i++) {
     if (atomic_load(&mempool[i].used)) {
       packets_used++;
@@ -58,14 +58,14 @@ struct Packet *packet_alloc(void) {
   ptrdiff_t lf = atomic_load(&last_free);
 
   for (size_t i = lf; i < packet_capacity; i++) {
-    if (atomic_compare_exchange_strong(&mempool[i].used, &expected, false)) {
+    if (atomic_compare_exchange_strong(&mempool[i].used, &expected, true)) {
       return &mempool[i];
     }
     expected = false;
   }
 
   for (size_t i = 0; i < lf; i++) {
-    if (atomic_compare_exchange_strong(&mempool[i].used, &expected, false)) {
+    if (atomic_compare_exchange_strong(&mempool[i].used, &expected, true)) {
       return &mempool[i];
     }
     expected = false;
