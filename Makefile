@@ -30,6 +30,6 @@ build/pf-userspace.o: src/pf-userspace.c
 
 
 build/pf.bpf.o: src/pf.c
-	$(CC) -c $(CFLAGS) $(PF_FLAGS) $(TARGET_BPF) $< -o $@
+	$(CC) -c $(PF_FLAGS) $(TARGET_BPF) $< -o $@
 
 

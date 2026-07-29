@@ -2,7 +2,6 @@
 #define asm __asm__
 #endif
 
-#include <stdint.h>
 #include <linux/bpf.h>
 #include <bpf/bpf_helpers.h>
 #include <xdp/xdp_helpers.h>
